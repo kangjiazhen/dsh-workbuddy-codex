@@ -29,6 +29,20 @@ dsh plugin add file:/path/to/dsh-workbuddy-stack
 
 The plugin ships a `cordis.patch.yml`, so the profile picks up the `workbuddy-stack` entry automatically once the package is a profile dependency.
 
+### If the git install fails
+
+`pnpm` rewrites `git+https://…` to `git+ssh://git@…` unless told otherwise, so an install on a machine without GitHub SSH keys fails with `Permission denied (publickey)`:
+
+```bash
+npm config set git-protocol https
+```
+
+Behind a proxy, git also needs to be told about it, because `pnpm` shells out to the `git` binary and does not forward its own proxy settings:
+
+```bash
+git config --global http.proxy http://127.0.0.1:7890
+```
+
 ## Configuration
 
 The defaults assume the usual layout under your home directory and can be overridden in the profile's `cordis.yml`:

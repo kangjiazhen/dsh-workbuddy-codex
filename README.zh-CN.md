@@ -29,6 +29,20 @@ dsh plugin add file:/path/to/dsh-workbuddy-stack
 
 插件自带 `cordis.patch.yml`，所以只要包进了 profile 依赖，profile 就会自动带上 `workbuddy-stack` 这一项。
 
+### 如果 git 安装失败
+
+`pnpm` 会把 `git+https://…` 改写成 `git+ssh://git@…`，所以在没有配 GitHub SSH 密钥的机器上会报 `Permission denied (publickey)`：
+
+```bash
+npm config set git-protocol https
+```
+
+走代理时还要单独告诉 git——`pnpm` 是去调 `git` 二进制的，不会把自身的代理设置传下去：
+
+```bash
+git config --global http.proxy http://127.0.0.1:7890
+```
+
 ## 配置
 
 默认值假定用家目录下的常规布局，可以在 profile 的 `cordis.yml` 里覆盖：
