@@ -1,0 +1,51 @@
+# dsh-workbuddy-stack — keeps the local WorkBuddy reverse-proxy chain answering.
+#
+# Two services are supervised here, neither of which installs itself as a
+# Windows service, so a reboot used to leave the model picker pointing at a dead
+# port:
+#
+#   gateway  wb2api           127.0.0.1:7863  OpenAI-compatible /v1/chat/completions
+#   bridge   codex-chat-bridge 127.0.0.1:7864  Responses API -> chat/completions
+#
+# Paths support `~`, `$VAR` / `${VAR}` and Windows `%VAR%`, so this file can be
+# copied between machines without rewriting the home directory.
+#
+# The `gateway` entry is on by default because dsh-llm-workbuddy needs it. The
+# `bridge` entry is off by default: it only exists for the Codex CLI, and it
+# stays quiet if codex-chat-bridge is not installed on this machine.
+#
+# Set `autostart: false` to observe a service without the plugin ever spawning
+# it — useful when something else (a scheduled task, a container) owns the
+# process lifecycle.
+- insert:
+    - id: workbuddy-stack
+      name: dsh-workbuddy-stack
+      inject: [tools]
+      config:
+        intervalMs: 15000
+        probeTimeoutMs: 2000
+
+        gateway:
+          enabled: true
+          autostart: true
+          baseURL: http://127.0.0.1:7863
+          # The gateway answers 503 on /healthz while it is running but has no
+          # usable upstream account; that is alive, not down.
+          acceptStatus: [200, 503]
+          command: ~/Documents/deepseek-harness/default-workspace/workbuddy2api-panel/wb2api.exe
+          args: [-config, config.json]
+          cwd: ~/Documents/deepseek-harness/default-workspace/workbuddy2api-panel
+
+        bridge:
+          enabled: false
+          autostart: true
+          baseURL: http://127.0.0.1:7864
+          acceptStatus: [200]
+          command: node
+          args:
+            - ~/Documents/deepseek-harness/default-workspace/codex-chat-bridge/bin/codex-chat-bridge.mjs
+            - --port
+            - '7864'
+            - --upstream
+            - http://127.0.0.1:7863
+          cwd: ''

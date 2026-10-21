@@ -1,0 +1,56 @@
+{
+  "name": "dsh-workbuddy-stack",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness plugin that supervises the local WorkBuddy reverse-proxy chain (wb2api gateway + Responses API bridge), so the provider port is always answering",
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "author": "kangjiazhen",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "workbuddy",
+    "process-supervisor",
+    "reverse-proxy",
+    "codex"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kangjiazhen/dsh-workbuddy-stack.git"
+  },
+  "homepage": "https://github.com/kangjiazhen/dsh-workbuddy-stack#readme",
+  "bugs": {
+    "url": "https://github.com/kangjiazhen/dsh-workbuddy-stack/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./supervisor": "./lib/supervisor.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  }
+}
