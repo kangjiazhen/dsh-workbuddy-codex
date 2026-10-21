@@ -4,17 +4,21 @@
  * imported for the config/service-mapping helpers (its `apply` needs a harness).
  */
 import assert from 'node:assert/strict';
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 
 import {
+  BRIDGE_ENTRY,
   ManagedProcess,
+  bridgeLaunchSpec,
   expandPath,
   healthURLFor,
   normalizeV1,
   probe,
+  readGatewayApiKey,
   resolveCommand,
   startSupervisor,
   superviseOnce,
@@ -349,5 +353,150 @@ describe('autostart end to end', () => {
     assert.equal(down.action, 'spawn', 'a dead service must be respawned');
     assert.notEqual(service.pid, firstPid);
     await service.stop();
+  });
+});
+
+
+describe('readGatewayApiKey', () => {
+  /** Write a config.json into a fresh temp dir and return that dir. */
+  function dirWith(contents) {
+    const dir = mkdtempSync(join(tmpdir(), 'wbs-key-'));
+    if (contents !== undefined) writeFileSync(join(dir, 'config.json'), contents);
+    return dir;
+  }
+
+  it('reads api_key out of the gateway config.json', () => {
+    const dir = dirWith(JSON.stringify({ api_key: 'abc123', other: 1 }));
+    const found = readGatewayApiKey(dir);
+    assert.equal(found.apiKey, 'abc123');
+    assert.equal(found.error, null);
+  });
+
+  it('tolerates a UTF-8 BOM, which Windows editors add', () => {
+    const dir = dirWith('\uFEFF' + JSON.stringify({ api_key: 'bom-key' }));
+    assert.equal(readGatewayApiKey(dir).apiKey, 'bom-key');
+  });
+
+  it('accepts the camelCase spelling as well', () => {
+    const dir = dirWith(JSON.stringify({ apiKey: 'camel' }));
+    assert.equal(readGatewayApiKey(dir).apiKey, 'camel');
+  });
+
+  it('reports a missing file instead of throwing', () => {
+    const found = readGatewayApiKey(mkdtempSync(join(tmpdir(), 'wbs-none-')));
+    assert.equal(found.apiKey, null);
+    assert.match(found.error, /not found/);
+  });
+
+  it('reports invalid JSON instead of throwing', () => {
+    const found = readGatewayApiKey(dirWith('{ not json'));
+    assert.equal(found.apiKey, null);
+    assert.ok(found.error);
+  });
+
+  it('reports a config without api_key', () => {
+    const found = readGatewayApiKey(dirWith(JSON.stringify({ port: 7863 })));
+    assert.equal(found.apiKey, null);
+    assert.match(found.error, /no `api_key`/);
+  });
+
+  it('treats a blank api_key as absent', () => {
+    const found = readGatewayApiKey(dirWith(JSON.stringify({ api_key: '   ' })));
+    assert.equal(found.apiKey, null);
+  });
+});
+
+describe('bridgeLaunchSpec', () => {
+  /** A Config-shaped object, defaulted the way the schema would. */
+  function cfg(overrides = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'wbs-spec-'));
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ api_key: 'gw-key' }));
+    return {
+      intervalMs: 15000,
+      probeTimeoutMs: 2000,
+      gatewayDir: dir,
+      gateway: { enabled: true, autostart: true, baseURL: 'http://127.0.0.1:7863', command: 'x', args: [], cwd: '', env: {}, acceptStatus: [200, 503] },
+      bridge: {
+        enabled: true,
+        autostart: true,
+        baseURL: 'http://127.0.0.1:7864',
+        command: '',
+        args: [],
+        cwd: '',
+        env: {},
+        acceptStatus: [200],
+        upstream: '',
+        apiKey: '',
+        conversationId: 'auto',
+        modelAllowlist: [],
+        ...overrides,
+      },
+      ...overrides.__root,
+    };
+  }
+
+  it('runs the shipped bridge entry through the current Node', () => {
+    const spec = bridgeLaunchSpec(cfg(), silentLogger);
+    assert.equal(spec.command, process.execPath);
+    assert.equal(spec.args[0], BRIDGE_ENTRY);
+    assert.ok(existsSync(spec.args[0]), 'the packaged bridge must actually be on disk');
+  });
+
+  it('points the bridge at the gateway it supervises', () => {
+    const spec = bridgeLaunchSpec(cfg(), silentLogger);
+    assert.equal(spec.env.CCB_UPSTREAM, 'http://127.0.0.1:7863/v1');
+    assert.ok(spec.args.includes('7864'));
+    assert.equal(spec.env.CCB_HOST, '127.0.0.1');
+  });
+
+  it('reuses the gateway api key so the two cannot drift apart', () => {
+    assert.equal(bridgeLaunchSpec(cfg(), silentLogger).env.CCB_API_KEY, 'gw-key');
+  });
+
+  it('prefers an explicit bridge.apiKey over the gateway config', () => {
+    const spec = bridgeLaunchSpec(cfg({ apiKey: 'explicit' }), silentLogger);
+    assert.equal(spec.env.CCB_API_KEY, 'explicit');
+  });
+
+  it('keeps conversationId=auto, which the WorkBuddy upstream requires', () => {
+    assert.equal(bridgeLaunchSpec(cfg(), silentLogger).env.CCB_CONVERSATION_ID, 'auto');
+  });
+
+  it('warns when conversationId is blanked out', () => {
+    const warnings = [];
+    const logger = { ...silentLogger, warn: (m) => warnings.push(m) };
+    bridgeLaunchSpec(cfg({ conversationId: '' }), logger);
+    assert.ok(warnings.some((w) => /11-128/.test(w)), 'the account-disable risk must be spelled out');
+  });
+
+  it('honours a custom upstream instead of the gateway', () => {
+    const spec = bridgeLaunchSpec(cfg({ upstream: 'http://10.0.0.5:9000' }), silentLogger);
+    assert.equal(spec.env.CCB_UPSTREAM, 'http://10.0.0.5:9000/v1');
+  });
+
+  it('passes the model allowlist through when one is set', () => {
+    const spec = bridgeLaunchSpec(cfg({ modelAllowlist: ['a', 'b'] }), silentLogger);
+    assert.equal(spec.env.CCB_MODEL_ALLOWLIST, 'a,b');
+  });
+
+  it('leaves the allowlist unset when empty, so the bridge forwards everything', () => {
+    assert.equal(bridgeLaunchSpec(cfg(), silentLogger).env.CCB_MODEL_ALLOWLIST, undefined);
+  });
+
+  it('delegates to a custom command and still hands it the port', () => {
+    const spec = bridgeLaunchSpec(cfg({ command: 'node', args: ['custom.mjs'] }), silentLogger);
+    assert.equal(spec.command, 'node');
+    assert.deepEqual(spec.args, ['custom.mjs']);
+    assert.equal(spec.env.CCB_PORT, '7864');
+  });
+
+  it('warns, but still starts, when no key can be found anywhere', () => {
+    const warnings = [];
+    const logger = { ...silentLogger, warn: (m) => warnings.push(m) };
+    const c = cfg();
+    c.gatewayDir = mkdtempSync(join(tmpdir(), 'wbs-nokey-'));
+    const spec = bridgeLaunchSpec(c, logger);
+    assert.equal(spec.env.CCB_API_KEY, undefined);
+    assert.ok(warnings.some((w) => /401/.test(w)));
   });
 });

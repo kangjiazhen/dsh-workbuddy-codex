@@ -4,15 +4,18 @@
 # Windows service, so a reboot used to leave the model picker pointing at a dead
 # port:
 #
-#   gateway  wb2api           127.0.0.1:7863  OpenAI-compatible /v1/chat/completions
+#   gateway  wb2api            127.0.0.1:7863  OpenAI-compatible /v1/chat/completions
 #   bridge   codex-chat-bridge 127.0.0.1:7864  Responses API -> chat/completions
+#
+# The bridge is bundled with this plugin, so `bridge.command` stays empty and the
+# shipped entry runs on the harness's own Node. Its upstream, bearer and
+# conversation id are derived: upstream defaults to the gateway above, the bearer
+# is read out of that gateway's `config.json`, and conversation id defaults to
+# `auto` (required — the upstream answers 400 / code 11-128 without it and the
+# gateway then disables the account).
 #
 # Paths support `~`, `$VAR` / `${VAR}` and Windows `%VAR%`, so this file can be
 # copied between machines without rewriting the home directory.
-#
-# The `gateway` entry is on by default because dsh-llm-workbuddy needs it. The
-# `bridge` entry is off by default: it only exists for the Codex CLI, and it
-# stays quiet if codex-chat-bridge is not installed on this machine.
 #
 # Set `autostart: false` to observe a service without the plugin ever spawning
 # it — useful when something else (a scheduled task, a container) owns the
@@ -26,6 +29,8 @@
       config:
         intervalMs: 15000
         probeTimeoutMs: 2000
+        # Where the gateway keeps config.json; the bridge reads `api_key` from it.
+        gatewayDir: ~/Documents/deepseek-harness/default-workspace/workbuddy2api-panel
 
         gateway:
           enabled: true
@@ -39,15 +44,16 @@
           cwd: ~/Documents/deepseek-harness/default-workspace/workbuddy2api-panel
 
         bridge:
-          enabled: false
+          enabled: true
           autostart: true
           baseURL: http://127.0.0.1:7864
           acceptStatus: [200]
-          command: node
-          args:
-            - ~/Documents/deepseek-harness/default-workspace/codex-chat-bridge/bin/codex-chat-bridge.mjs
-            - --port
-            - '7864'
-            - --upstream
-            - http://127.0.0.1:7863
-          cwd: ''
+          # Empty = run the bridge shipped in this package.
+          command: ''
+          # Empty = use the gateway's baseURL. Empty apiKey = read the gateway's config.json.
+          upstream: ''
+          apiKey: ''
+          conversationId: auto
+          # Models the bridge forwards. Empty = forward everything; the gateway
+          # is what actually rejects a model your account tier cannot use.
+          modelAllowlist: []

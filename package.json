@@ -1,9 +1,12 @@
 {
   "name": "dsh-workbuddy-stack",
-  "version": "0.1.0",
-  "description": "DeepSeek Harness plugin that supervises the local WorkBuddy reverse-proxy chain (wb2api gateway + Responses API bridge), so the provider port is always answering",
+  "version": "0.2.0",
+  "description": "DeepSeek Harness plugin that supervises the local WorkBuddy reverse-proxy chain (wb2api gateway + bundled Responses API bridge), so Codex and the model picker always have a port answering",
   "type": "module",
   "main": "lib/index.js",
+  "bin": {
+    "dsh-workbuddy-bridge": "bin/serve.mjs"
+  },
   "license": "MIT",
   "author": "kangjiazhen",
   "keywords": [
@@ -13,7 +16,9 @@
     "workbuddy",
     "process-supervisor",
     "reverse-proxy",
-    "codex"
+    "codex",
+    "responses-api",
+    "chat-completions"
   ],
   "repository": {
     "type": "git",
@@ -40,12 +45,16 @@
       "default": "./lib/index.js"
     },
     "./supervisor": "./lib/supervisor.js",
+    "./bridge/codex-chat-bridge.mjs": "./bridge/codex-chat-bridge.mjs",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
+    "bin",
+    "bridge",
     "cordis.patch.yml",
+    "start-bridge.vbs",
     "README.md",
     "README.zh-CN.md",
     "LICENSE"

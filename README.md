@@ -2,18 +2,35 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-A DeepSeek Harness plugin that keeps the local WorkBuddy reverse-proxy chain alive.
+A DeepSeek Harness plugin that keeps the local WorkBuddy reverse-proxy chain alive — **including the Responses bridge that OpenAI Codex CLI needs**.
 
-Two services have to be running before the harness can talk to WorkBuddy models, and neither installs itself as a Windows service:
+Three things have to line up before a WorkBuddy model can answer, and none of them installs itself as a Windows service:
 
 | Port | Service | Role |
 | --- | --- | --- |
 | `127.0.0.1:7863` | `wb2api` gateway | OpenAI-compatible `/v1/chat/completions` |
-| `127.0.0.1:7864` | `codex-chat-bridge` | Responses API → chat/completions, for Codex CLI |
+| `127.0.0.1:7864` | Responses bridge (**bundled**) | Responses API → chat/completions, for Codex CLI |
+| — | `dsh-llm-workbuddy` | provider plugin; talks to `7863` for the model picker |
 
-Both used to be started by hand, so a reboot silently left the model picker pointing at a dead port — the provider plugin loaded fine, listed models fine, and failed on the first request. This plugin supervises them: on load it probes each health endpoint, spawns whatever is missing, and re-checks on a timer so a crashed process comes back.
+Both processes used to be started by hand, so a reboot silently left the model picker pointing at a dead port — the provider plugin loaded fine, listed models fine, and failed on the first request. This plugin supervises them: on load it probes each health endpoint, spawns whatever is missing, and re-checks on a timer so a crashed process comes back.
 
-It deliberately **does not reimplement the gateway**. It only orchestrates processes that already exist on disk. Provider registration stays with the provider plugin (`dsh-llm-workbuddy` and friends) — this plugin's only job is making sure the port that provider talks to is actually answering.
+It deliberately **does not reimplement the gateway**. It only orchestrates processes. Provider registration stays with the provider plugin (`dsh-llm-workbuddy` and friends) — this plugin's job is making sure the ports those clients talk to are actually answering.
+
+## Why the bridge is bundled
+
+`codex-cli` 0.1xx+ dropped `wire_api = "chat"` and speaks **only** the OpenAI Responses API (`POST /v1/responses`, SSE). A WorkBuddy gateway implements **only** Chat Completions (`POST /v1/chat/completions`). Point Codex straight at the gateway and every request dies with:
+
+```
+unexpected status 404 Not Found, url: http://127.0.0.1:7863/v1/responses
+```
+
+There is no config flag around this — Codex rejects `wire_api = "chat"` at load time. A translation layer is mandatory, so this package ships one:
+
+```
+Codex CLI --(Responses)--> bridge :7864 --(ChatCompletions)--> gateway :7863 --> WorkBuddy
+```
+
+It is the same code as [codex-chat-bridge](https://github.com/kangjiazhen/codex-chat-bridge), vendored at `bridge/codex-chat-bridge.mjs` (zero dependencies, runs on the harness's own Node) so installing this plugin is the only step — there is no second repo to clone and no path to fill in.
 
 ## Install
 
@@ -43,9 +60,56 @@ Behind a proxy, git also needs to be told about it, because `pnpm` shells out to
 git config --global http.proxy http://127.0.0.1:7890
 ```
 
+## Using it with Codex
+
+The bridge listens on `7864` and presents a Responses API. Point Codex at it:
+
+```toml
+# ~/.codex/config.toml
+model = "global:gpt-5.3-codex"
+model_provider = "wb"
+
+[model_providers.wb]
+name = "workbuddy"
+base_url = "http://127.0.0.1:7864/v1"
+wire_api = "responses"
+experimental_bearer_token = "anything"
+request_max_retries = 2
+stream_max_retries = 2
+```
+
+The bearer is not checked by the bridge — it authenticates to the gateway itself with the key it reads from the gateway's `config.json`. Set it to any non-empty string; Codex refuses to start without one.
+
+Then just use Codex normally:
+
+```bash
+codex exec "list the files in this directory"
+```
+
+If you pick a model your account tier cannot use, the gateway answers `11158 model not allowed for user type [...]`. That is an account property, not a bridge fault — see [Model availability](#model-availability).
+
+### Two settings you must not skip
+
+**1. `conversation_id` — the one that can disable your account.**
+
+The WorkBuddy upstream validates three headers (`X-Conversation-ID`, `X-Conversation-Request-ID`, `X-Conversation-Message-ID`) and answers `400 {"code":"11-128","msg":"request illegal"}` when they are missing. The gateway classifies that as an *account fault* and responds by **disabling the account** — every account it touched, in the same pass. The resulting message says `re-login required`, which is misleading: the credentials are usually still valid and reviving them restores service immediately.
+
+So the bridge defaults to `conversationId: auto`: it derives a stable id per Codex session (from `prompt_cache_key`) and sends it as `metadata.conversation_id`. Do not blank this out. The plugin warns at startup if you do.
+
+If you have already tripped it, revive the accounts rather than re-logging in:
+
+```bash
+# gateway panel: http://127.0.0.1:7863/panel/
+curl -X POST http://127.0.0.1:7863/panel/api/accounts/<uid>/revive
+```
+
+**2. The bearer must match the gateway's `api_key`.**
+
+The gateway answers `401` to every request without it. Rather than making you copy the secret, the plugin reads `api_key` straight out of the gateway's `config.json` (that is what `gatewayDir` is for) and hands it to the bridge. Set `bridge.apiKey` only to override that.
+
 ## Configuration
 
-The defaults assume the usual layout under your home directory and can be overridden in the profile's `cordis.yml`:
+The defaults assume the usual layout and can be overridden in the profile's `cordis.yml`:
 
 ```yaml
 - id: workbuddy-stack
@@ -53,6 +117,7 @@ The defaults assume the usual layout under your home directory and can be overri
   config:
     intervalMs: 15000        # re-probe cadence
     probeTimeoutMs: 2000     # per-probe timeout
+    gatewayDir: ~/Documents/deepseek-harness/default-workspace/workbuddy2api-panel
 
     gateway:
       enabled: true
@@ -64,28 +129,26 @@ The defaults assume the usual layout under your home directory and can be overri
       cwd: ~/Documents/deepseek-harness/default-workspace/workbuddy2api-panel
 
     bridge:
-      enabled: false
+      enabled: true
       autostart: true
       baseURL: http://127.0.0.1:7864
       acceptStatus: [200]
-      command: node
-      args:
-        - ~/Documents/deepseek-harness/default-workspace/codex-chat-bridge/bin/codex-chat-bridge.mjs
-        - --port
-        - '7864'
-        - --upstream
-        - http://127.0.0.1:7863
+      command: ''            # empty = run the bundled bridge
+      upstream: ''           # empty = the gateway's baseURL
+      apiKey: ''             # empty = read gatewayDir/config.json
+      conversationId: auto   # required — see above
+      modelAllowlist: []     # empty = forward every model
 ```
 
 Paths accept `~`, `$VAR` / `${VAR}`, and Windows `%VAR%`, so a config file can be copied between machines without rewriting the home directory.
 
-`bridge.enabled` is `false` by default: that half of the chain only exists for the Codex CLI, and it should stay quiet on machines where `codex-chat-bridge` is not installed.
+`bridge.command` is empty on purpose. Setting it switches the plugin from "run the bundled bridge" to "supervise this command instead", which is how you'd point it at a different bridge build; `CCB_PORT`, `CCB_UPSTREAM` and the rest of the environment are still derived for you.
 
 ### `acceptStatus` matters
 
 The gateway answers **`503`** on `/healthz` while it is running but has no usable upstream account yet (nothing signed in, or every account cooling down). That is *alive*, not *down*.
 
-A supervisor that only accepts `2xx` would read that as "not started", spawn a second copy, and lose the port race. So the gateway entry accepts `[200, 503]` by default, while the bridge accepts `[200]` only.
+A supervisor that only accepted `2xx` would read that as "not started", spawn a second copy, and lose the port race. So the gateway entry accepts `[200, 503]` by default, while the bridge accepts `[200]` only.
 
 ### `autostart: false`
 
@@ -110,16 +173,30 @@ If `@deepseek-ai/dsh-tools` is not importable, the tool is still registered from
 - The timer is `unref`'d — an idle supervisor cannot hold the process open.
 - On dispose the timer stops and any child **this plugin spawned** is terminated. A service that was already running before the plugin loaded is left alone: it is probed and reported, never adopted, so unloading the plugin does not kill a process someone else started.
 
+## Model availability
+
+Which models answer is a property of your **WorkBuddy account tier**, not of this plugin or the bridge. A `personal_free_user` account, measured on 2026-10-21, could reach:
+
+| Realm | Working |
+| --- | --- |
+| `global:` | `gpt-5.3-codex`, `glm-5.3`, `glm-5.2`, `kimi-k3`, `kimi-k2.6`, `hy4-preview`, `step-5-preview`, `deepseek-v4.1-flash`, `minimax-m3.1-flash` |
+| `cn:` | `deepseek-v4.1-flash`, `deepseek-v4-pro`, `glm-5.3` |
+
+Every other GPT model (`gpt-5.4`, `gpt-5.5`, the `gpt-6-*` family, …) answered `11158 model not allowed for user type [personal_free_user]`. That list moves with your subscription, so treat it as a snapshot, not a contract.
+
+`modelAllowlist` exists to fail *fast* on models you know are unreachable: the bridge rejects them with a local `400 model_not_allowed` instead of letting the gateway classify the refusal as an account fault and disable the pool. Leaving it empty is the honest default.
+
 ## Scope and limits
 
-- Process supervision only. It does not start, stop, or configure the *upstream* provider, and it has no opinion about which models are reachable.
+- Process supervision plus a request translator. It does not start, stop, or configure the *upstream* provider, and it has no opinion about which models your account may use.
 - No restart backoff: a child that dies instantly is respawned once per `intervalMs`. If the binary is missing or the port is held by a foreign process, the logs will say so on every pass rather than spinning.
 - `windowsHide: true` is set on spawn, so a supervised console child does not flash a window on Windows.
 - Linux and macOS work with the same code; only the default paths in `cordis.patch.yml` are Windows-specific.
+- The upstream WorkBuddy project has stopped maintenance and is actively tightening anti-proxy checks. This plugin keeps the chain alive; it cannot keep the upstream channel open.
 
 ## Related
 
-- [codex-chat-bridge](https://github.com/kangjiazhen/codex-chat-bridge) — the Responses → chat/completions bridge this plugin can supervise.
+- [codex-chat-bridge](https://github.com/kangjiazhen/codex-chat-bridge) — the bridge this plugin bundles, if you want it standalone.
 - [LiteLLM](https://github.com/BerriAI/litellm), [one-api](https://github.com/songquanpeng/one-api), [new-api](https://github.com/Calcium-Ion/new-api) — full gateways, if you need routing and key management rather than local process supervision.
 
 ## License

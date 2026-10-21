@@ -1,19 +1,36 @@
 # dsh-workbuddy-stack
 
-**中文** | [English](README.md)
+[English](README.md) | **简体中文**
 
-一个 DeepSeek Harness 插件，用来把本机的 WorkBuddy 反代链路「看活」。
+一个 DeepSeek Harness 插件，负责把本地 WorkBuddy 反代链路维持在线 —— **包括 OpenAI Codex CLI 需要的那条 Responses 桥**。
 
-要用上 WorkBuddy 的模型，必须有两个服务在跑，而它们都不会把自己装成 Windows 服务：
+在 WorkBuddy 模型能回答之前，有三样东西必须同时对上，而它们都不会把自己装成 Windows 服务：
 
 | 端口 | 服务 | 作用 |
 | --- | --- | --- |
 | `127.0.0.1:7863` | `wb2api` 网关 | OpenAI 兼容的 `/v1/chat/completions` |
-| `127.0.0.1:7864` | `codex-chat-bridge` | Responses API → chat/completions，供 Codex CLI 使用 |
+| `127.0.0.1:7864` | Responses 桥（**内置**） | Responses API → chat/completions，供 Codex CLI 使用 |
+| — | `dsh-llm-workbuddy` | provider 插件；模型选择器通过它访问 `7863` |
 
-以前这两个都得手动起，于是重启一次之后，模型选择器还指着一个死掉的端口——provider 插件加载正常、模型列表也正常，第一条请求才失败。这个插件负责看住它们：加载时探测各自的健康端点，缺哪个就拉哪个，之后按定时器复查，进程崩了会被重新拉起。
+这两个进程过去都要手动启动，于是重启一次电脑之后，模型选择器会悄无声息地指向一个死掉的端口 —— provider 插件加载正常、模型列表正常，直到第一次请求才失败。本插件接管它们：加载时探测各自的健康端点，缺什么就拉起什么，并按定时器复查，进程崩了会自动回来。
 
-它**刻意不重新实现网关**，只编排磁盘上已经存在的进程。provider 注册仍然交给 provider 插件（`dsh-llm-workbuddy` 之类）——这个插件唯一的工作，是保证那个 provider 要连的端口真的在应答。
+它刻意**不重写网关**，只做进程编排。provider 注册仍然由 provider 插件（`dsh-llm-workbuddy` 等）负责 —— 本插件唯一的职责，是保证那些客户端要访问的端口真的有人应答。
+
+## 为什么桥是内置的
+
+`codex-cli` 0.1xx 之后删掉了 `wire_api = "chat"`，只讲 OpenAI 的 **Responses** 协议（`POST /v1/responses`，SSE）。而 WorkBuddy 网关只实现 **Chat Completions**（`POST /v1/chat/completions`）。让 Codex 直连网关，每个请求都会死在这里：
+
+```
+unexpected status 404 Not Found, url: http://127.0.0.1:7863/v1/responses
+```
+
+这不是配置项能绕过的问题 —— Codex 在加载阶段就直接拒绝 `wire_api = "chat"`。转换层是必需品，所以本包自带一个：
+
+```
+Codex CLI --(Responses)--> 桥 :7864 --(ChatCompletions)--> 网关 :7863 --> WorkBuddy
+```
+
+它和 [codex-chat-bridge](https://github.com/kangjiazhen/codex-chat-bridge) 是同一份代码，以 `bridge/codex-chat-bridge.mjs` 内置（零依赖，跑在 Harness 自带的 Node 上），所以装这一个插件就够了 —— 不需要再 clone 第二个仓库，也没有任何路径要你填。
 
 ## 安装
 
@@ -21,31 +38,78 @@
 dsh plugin add git+https://github.com/kangjiazhen/dsh-workbuddy-stack.git
 ```
 
-或者从本地目录装：
+或者从本地检出安装：
 
 ```bash
 dsh plugin add file:/path/to/dsh-workbuddy-stack
 ```
 
-插件自带 `cordis.patch.yml`，所以只要包进了 profile 依赖，profile 就会自动带上 `workbuddy-stack` 这一项。
+插件自带 `cordis.patch.yml`，所以只要它成为 profile 依赖，profile 就会自动拿到 `workbuddy-stack` 这一条。
 
-### 如果 git 安装失败
+### git 安装失败的话
 
-`pnpm` 会把 `git+https://…` 改写成 `git+ssh://git@…`，所以在没有配 GitHub SSH 密钥的机器上会报 `Permission denied (publickey)`：
+除非另有指定，`pnpm` 会把 `git+https://…` 改写成 `git+ssh://git@…`，因此在没有配置 GitHub SSH 密钥的机器上，安装会失败并报 `Permission denied (publickey)`：
 
 ```bash
 npm config set git-protocol https
 ```
 
-走代理时还要单独告诉 git——`pnpm` 是去调 `git` 二进制的，不会把自身的代理设置传下去：
+如果走代理，还得单独告诉 git —— `pnpm` 是通过调用 git 二进制实现的，不会把自己的代理设置传下去：
 
 ```bash
 git config --global http.proxy http://127.0.0.1:7890
 ```
 
+## 配合 Codex 使用
+
+桥监听 `7864`，对外提供 Responses API。把 Codex 指过去：
+
+```toml
+# ~/.codex/config.toml
+model = "global:gpt-5.3-codex"
+model_provider = "wb"
+
+[model_providers.wb]
+name = "workbuddy"
+base_url = "http://127.0.0.1:7864/v1"
+wire_api = "responses"
+experimental_bearer_token = "anything"
+request_max_retries = 2
+stream_max_retries = 2
+```
+
+桥本身不校验这个 bearer —— 它用自己的方式（从网关 `config.json` 读出的 key）向上游认证。填任意非空字符串即可，因为 Codex 没有它就不启动。
+
+之后正常用 Codex 就行：
+
+```bash
+codex exec "列出当前目录的文件"
+```
+
+如果选到了你的账号档位用不了的模型，网关会返回 `11158 model not allowed for user type [...]`。那是账号属性，不是桥的故障 —— 见[模型可用性](#模型可用性)。
+
+### 两个绝对不能跳过的设置
+
+**1. `conversation_id` —— 能把账号搞封的那个。**
+
+WorkBuddy 上游会校验三个头（`X-Conversation-ID`、`X-Conversation-Request-ID`、`X-Conversation-Message-ID`），缺任意一个就返回 `400 {"code":"11-128","msg":"request illegal"}`。网关把这种情况归类为*账号故障*，处理方式是**禁用账号** —— 而且是一轮里把碰到的账号全部禁用。它给出的原因是 `re-login required`，这句话有误导性：凭证通常仍然有效，解冻就能立刻恢复服务。
+
+所以桥默认 `conversationId: auto`：按 Codex 会话（取自 `prompt_cache_key`）推导出一个稳定 id，作为 `metadata.conversation_id` 发送。不要把它置空，插件会在启动时告警。
+
+如果不幸已经踩了，解冻账号即可，不需要重新登录：
+
+```bash
+# 网关面板：http://127.0.0.1:7863/panel/
+curl -X POST http://127.0.0.1:7863/panel/api/accounts/<uid>/revive
+```
+
+**2. bearer 必须和网关的 `api_key` 一致。**
+
+没有它，网关对每个请求都回 `401`。为了不让你手工抄密钥，插件直接从网关的 `config.json` 里读 `api_key`（`gatewayDir` 就是干这个的）并交给桥。只有要覆盖时才设 `bridge.apiKey`。
+
 ## 配置
 
-默认值假定用家目录下的常规布局，可以在 profile 的 `cordis.yml` 里覆盖：
+默认值假设了常规目录结构，可在 profile 的 `cordis.yml` 中覆盖：
 
 ```yaml
 - id: workbuddy-stack
@@ -53,6 +117,7 @@ git config --global http.proxy http://127.0.0.1:7890
   config:
     intervalMs: 15000        # 复查间隔
     probeTimeoutMs: 2000     # 单次探测超时
+    gatewayDir: ~/Documents/deepseek-harness/default-workspace/workbuddy2api-panel
 
     gateway:
       enabled: true
@@ -64,64 +129,76 @@ git config --global http.proxy http://127.0.0.1:7890
       cwd: ~/Documents/deepseek-harness/default-workspace/workbuddy2api-panel
 
     bridge:
-      enabled: false
+      enabled: true
       autostart: true
       baseURL: http://127.0.0.1:7864
       acceptStatus: [200]
-      command: node
-      args:
-        - ~/Documents/deepseek-harness/default-workspace/codex-chat-bridge/bin/codex-chat-bridge.mjs
-        - --port
-        - '7864'
-        - --upstream
-        - http://127.0.0.1:7863
+      command: ''            # 留空 = 运行内置桥
+      upstream: ''           # 留空 = 用网关的 baseURL
+      apiKey: ''             # 留空 = 读 gatewayDir/config.json
+      conversationId: auto   # 必填 —— 见上文
+      modelAllowlist: []     # 留空 = 放行所有模型
 ```
 
-路径支持 `~`、`$VAR` / `${VAR}` 和 Windows 的 `%VAR%`，所以配置文件可以在不同机器之间直接拷，不用重写家目录。
+路径支持 `~`、`$VAR` / `${VAR}` 以及 Windows 的 `%VAR%`，所以同一份配置可以在机器之间直接拷。
 
-`bridge.enabled` 默认是 `false`：这一半链路只服务 Codex CLI，在没装 `codex-chat-bridge` 的机器上就该保持安静。
+`bridge.command` 留空是刻意的。一旦填了，插件就从「运行内置桥」切换成「监管这条命令」，用于指向另一个桥构建；`CCB_PORT`、`CCB_UPSTREAM` 等环境变量依然由插件推导。
 
-### `acceptStatus` 为什么重要
+### `acceptStatus` 很关键
 
-网关在**还活着但上游账号不可用**的时候（没登录、或者所有账号都在冷却），`/healthz` 返回的是 **`503`**。这是「活着」，不是「挂了」。
+网关在**进程活着但上游账号暂时不可用**时（没登录，或所有账号都在冷却），`/healthz` 返回 **`503`**。那是*活着*，不是*挂了*。
 
-只认 `2xx` 的守护逻辑会把它当成「没启动」，于是再起一份，然后两份抢同一个端口。所以网关这一项默认接受 `[200, 503]`，而桥只接受 `[200]`。
+只认 `2xx` 的监管器会把它读成「没启动」，于是拉起第二份、抢端口失败。所以网关那条默认接受 `[200, 503]`，而桥只接受 `[200]`。
 
 ### `autostart: false`
 
-只看不管：探测、上报，但永不 spawn。适用于生命周期归别的东西管的场景——计划任务、容器、包装脚本——你只想要健康状态。
+只观察、永不拉起。当生命周期由别的东西掌管时用这个 —— 计划任务、容器、包装脚本 —— 你只想拿到健康状态上报。
 
 ## 状态工具
 
-当 `tools` 这条缝挂载着的时候，插件会注册 `workbuddy_stack_status`：
+当 `tools` 缝挂载后，插件会注册 `workbuddy_stack_status`：
 
 ```
 gateway: up (http://127.0.0.1:7863/healthz, pid 14592)
 bridge: up (http://127.0.0.1:7864/healthz)
 ```
 
-每行都带实时探测结果、受管子进程 pid，以及上次拉起失败的错误——这样「模型列表是空的」和「端口是死的」不用翻日志就能分清。
+每行都带实时探测结果、被监管子进程的 pid，以及最近一次拉起失败的错误 —— 这样「模型列表是空的」和「端口死了」不用翻日志也能分清。
 
-如果 `@deepseek-ai/dsh-tools` 导入不到，工具仍然会用原始描述符注册；如果 `tools` 这条缝根本不在，守护逻辑照样跑。两者互不依赖。
+如果 `@deepseek-ai/dsh-tools` 无法导入，工具仍会以原始描述符注册；如果 `tools` 缝根本不存在，监管照常运行。两者互不依赖。
 
 ## 生命周期
 
-- 第一次检查在 `apply()` 之后异步跑，冷启动不会卡住 harness。
-- 定时器带 `unref()`，空转的守护不会把宿主进程吊着不放。
-- dispose 时停掉定时器，并终止**由本插件拉起的**子进程。插件加载前就已经在跑的服务只探测、只上报、绝不收养，所以卸载插件不会杀掉别人起的进程。
+- 第一次监管在 `apply()` 之后异步立刻执行，冷启动不会阻塞 Harness。
+- 定时器是 `unref` 过的 —— 空转的监管器不会把进程吊住。
+- dispose 时停掉定时器，并终止**本插件自己拉起**的子进程。加载插件之前就在跑的服务只探测上报、绝不接管，所以卸载插件不会杀掉别人启动的进程。
+
+## 模型可用性
+
+哪些模型能应答，取决于你的 **WorkBuddy 账号档位**，与本插件和桥无关。一个 `personal_free_user` 账号在 2026-10-21 实测能触达：
+
+| 域 | 可用 |
+| --- | --- |
+| `global:` | `gpt-5.3-codex`、`glm-5.3`、`glm-5.2`、`kimi-k3`、`kimi-k2.6`、`hy4-preview`、`step-5-preview`、`deepseek-v4.1-flash`、`minimax-m3.1-flash` |
+| `cn:` | `deepseek-v4.1-flash`、`deepseek-v4-pro`、`glm-5.3` |
+
+其余 GPT 模型（`gpt-5.4`、`gpt-5.5`、`gpt-6-*` 全系……）一律返回 `11158 model not allowed for user type [personal_free_user]`。这份名单随你的订阅变动，请当作快照而非承诺。
+
+`modelAllowlist` 的用途是让已知不可达的模型**快速失败**：桥直接本地回 `400 model_not_allowed`，而不是让网关把拒绝归类成账号故障、进而禁用整个池子。留空是诚实的默认。
 
 ## 范围与限制
 
-- 只做进程守护。它不启动、不停止、不配置**上游** provider，也不对哪些模型可用有任何意见。
-- 没有重启退避：秒崩的子进程会按 `intervalMs` 一次一次被拉起。如果二进制不存在、或者端口被别的进程占着，日志每一轮都会直说，而不是空转。
-- spawn 时带 `windowsHide: true`，Windows 下受管的控制台子进程不会闪窗。
-- Linux / macOS 用同一份代码即可，只有 `cordis.patch.yml` 里的默认路径是 Windows 专用。
+- 只做进程监管加请求翻译。它不启动、停止或配置*上游* provider，也不对你账号能用哪些模型发表意见。
+- 没有重启退避：瞬间死掉的子进程每个 `intervalMs` 会被拉起一次。如果二进制缺失或端口被别人占着，日志每轮都会说明，不会空转。
+- spawn 时设了 `windowsHide: true`，被监管的控制台子进程不会在 Windows 上闪窗。
+- Linux 和 macOS 用同一份代码即可；只有 `cordis.patch.yml` 里的默认路径是 Windows 专用的。
+- 上游 WorkBuddy 项目已停止维护，并正在收紧反代检测。本插件能让链路活着，但保不住上游通道本身。
 
-## 相关项目
+## 相关
 
-- [codex-chat-bridge](https://github.com/kangjiazhen/codex-chat-bridge) —— 本插件可以守护的那个 Responses → chat/completions 桥。
-- [LiteLLM](https://github.com/BerriAI/litellm)、[one-api](https://github.com/songquanpeng/one-api)、[new-api](https://github.com/Calcium-Ion/new-api) —— 如果你要的是路由和密钥管理而不是本机进程守护，用这些完整的网关。
+- [codex-chat-bridge](https://github.com/kangjiazhen/codex-chat-bridge) —— 本插件内置的那座桥，想单独用可以去这里。
+- [LiteLLM](https://github.com/BerriAI/litellm)、[one-api](https://github.com/songquanpeng/one-api)、[new-api](https://github.com/Calcium-Ion/new-api) —— 完整网关，如果你需要路由与密钥管理，而不是本地进程监管。
 
-## 许可证
+## 许可
 
 MIT
