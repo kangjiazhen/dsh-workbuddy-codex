@@ -20,7 +20,9 @@
 - insert:
     - id: workbuddy-stack
       name: dsh-workbuddy-stack
-      inject: [tools]
+      # No hard seam requirements: supervision is useful even where the tools
+      # seam is absent, and the status tool attaches through `ctx.inject`.
+      inject: []
       config:
         intervalMs: 15000
         probeTimeoutMs: 2000
