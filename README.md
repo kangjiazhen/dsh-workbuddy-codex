@@ -31,6 +31,7 @@ Everything lives under the `workbuddy-codex` entry's `config` in the profile's `
 | `provider.autoCheckin` | `true` | Claim the daily WorkBuddy checkin. |
 | `gateway.acceptStatus` | `[200, 503]` | The gateway answers `503` while running without a usable account — alive, not down. |
 | `bridge.conversationId` | `auto` | Not optional against a WorkBuddy gateway: without it the upstream answers `400 / 11-128` and the gateway disables the account. |
+| `bridge.maxPromptTokens` | `0` (off) | Above this estimated prompt size the bridge answers `413` locally instead of forwarding a body the upstream rejects with `400 prompt_too_long`. See [Why a local prompt ceiling](#why-a-local-prompt-ceiling). |
 
 If `dsh-llm-workbuddy` is not installed at all, the plugin still supervises the gateway and the bridge and logs the one command that fixes it (`dsh plugin add dsh-llm-workbuddy`). Nothing throws.
 
@@ -184,6 +185,7 @@ The defaults assume the usual layout and can be overridden in the profile's `cor
       apiKey: ''             # empty = read gatewayDir/config.json
       conversationId: auto   # required — see above
       modelAllowlist: []     # empty = forward every model
+      maxPromptTokens: 1200000  # local 413 above this; 0 = off
 ```
 
 Paths accept `~`, `$VAR` / `${VAR}`, and Windows `%VAR%`, so a config file can be copied between machines without rewriting the home directory.
@@ -231,6 +233,17 @@ Which models answer is a property of your **WorkBuddy account tier**, not of thi
 Every other GPT model (`gpt-5.4`, `gpt-5.5`, the `gpt-6-*` family, …) answered `11158 model not allowed for user type [personal_free_user]`. That list moves with your subscription, so treat it as a snapshot, not a contract.
 
 `modelAllowlist` exists to fail *fast* on models you know are unreachable: the bridge rejects them with a local `400 model_not_allowed` instead of letting the gateway classify the refusal as an account fault and disable the pool. Leaving it empty is the honest default.
+
+## Why a local prompt ceiling
+
+An upstream `400 prompt_too_long` is not just a rejection — it returns **no `usage`**. A client that learns its own size from `usage` therefore cannot see how far over it is. It holds the last successful measurement, keeps resending the same oversized history, and never reaches the threshold that would trigger auto-compaction. Measured on a real session: the last success was `662,937` input tokens, the rejected body was `1,049,429`, and the client's counter stayed frozen at `662,937` — 70% of a 950k window — for the rest of the session. The overshoot was 849 tokens, and it was unrecoverable.
+
+Two consequences the bridge handles directly:
+
+- **Images in tool results are dropped, not serialized.** A Chat Completions `role: "tool"` message carries text only, so an image returned by a tool has nowhere to go. Stringifying it put the whole `data:` URL into the prompt as literal text; the upstream tokenizer then charged roughly one token per character. One 1080p screenshot (~570k base64 characters) was measured at 280k–594k input tokens — a single tool result could fill a 1M context. The bridge now keeps the text parts, drops the images, and appends `[N images omitted: ...]`. Images in **user** messages are unaffected: those become real `image_url` parts and cost a normal vision budget.
+- **`maxPromptTokens` refuses locally.** Above the ceiling the bridge answers `413` with the estimated size and never contacts the upstream. No account is spent, no rate-limit cooldown is tripped, and the message says what to do.
+
+Set it a little **above** the real ceiling (`1200000` for a `1048576`-token upstream) so an estimate that runs high cannot refuse a request that would have fit. The estimate is deliberately crude — ~4 chars/token for text, ~1 char/token for long base64 runs, a fixed vision cost per image — which is why it is a tripwire and not a context manager.
 
 ## Scope and limits
 

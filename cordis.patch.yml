@@ -76,3 +76,11 @@
           # Models the bridge forwards. Empty = forward everything; the gateway
           # is what actually rejects a model your account tier cannot use.
           modelAllowlist: []
+          # Tripwire, not a context manager. Above this estimated prompt size the
+          # bridge answers 413 locally instead of spending an upstream account on
+          # a request the upstream will reject with 400 prompt_too_long — a 400
+          # that carries no `usage`, so the client cannot see how big it is, keeps
+          # resending, and never compacts. Deliberately above the real 1048576
+          # ceiling so an estimate that runs a little high cannot refuse a request
+          # that would have fit. 0 disables it.
+          maxPromptTokens: 1200000
