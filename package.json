@@ -1,6 +1,6 @@
 {
   "name": "dsh-workbuddy-codex",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "DeepSeek Harness plugin that keeps the local WorkBuddy chain answering: registers the workbuddy model provider (mounted from dsh-llm-workbuddy), supervises the wb2api gateway, and runs the bundled Responses API bridge so Codex works too",
   "type": "module",
   "main": "lib/index.js",
