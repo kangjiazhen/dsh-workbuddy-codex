@@ -68,7 +68,8 @@ Environment
   CCB_MAX_PROMPT_TOKENS  Refuse locally above this estimated prompt size, with
                          a readable 413, instead of letting the upstream answer
                          400 prompt_too_long (which returns no usage and leaves
-                         the client unable to compact). 0 = disabled.
+                         the client unable to compact). Defaults to 1200000,
+                         just above the real 1048576 ceiling; 0 = disabled.
 
 Codex config (~/.codex/config.toml)
 
@@ -122,16 +123,29 @@ const TIMEOUT_MS = Number(process.env.CCB_TIMEOUT_MS || 600000);
 const CONV_MODE = process.env.CCB_CONVERSATION_ID || '';
 
 /**
- * Fail-fast prompt ceiling, in tokens. Empty/0 disables the precheck.
+ * Fail-fast prompt ceiling, in tokens. `CCB_MAX_PROMPT_TOKENS=0` disables it.
  *
  * Without it an oversized body is still forwarded, the upstream answers 400
  * `prompt_too_long`, and that 400 carries no `usage` — so the client cannot learn
  * how big it really is, keeps resending the same body, and never compacts. The
  * request also burns an upstream account and can trip its rate-limit cooldown.
  * Answering locally with a readable 413 keeps the account untouched and says how
- * much to cut. `CCB_MAX_PROMPT_TOKENS=1048576` matches a 1M-token upstream.
+ * much to cut.
+ *
+ * The default sits just above the real 1,048,576-token upstream ceiling, so an
+ * estimate that runs a little high cannot refuse a request that would have fit.
+ * It lives here, not in a launcher's environment, on purpose: the bridge is
+ * started by the DSH supervisor, by `start-bridge.vbs`, and by hand during
+ * debugging, and a launcher-only default silently disarms the tripwire the first
+ * time somebody picks a different launch path. Callers that want a different
+ * ceiling still override it; `0` turns it off.
  */
-const MAX_PROMPT_TOKENS = Number(process.env.CCB_MAX_PROMPT_TOKENS || 0);
+const DEFAULT_MAX_PROMPT_TOKENS = 1_200_000;
+const MAX_PROMPT_TOKENS = (() => {
+  const raw = process.env.CCB_MAX_PROMPT_TOKENS;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_MAX_PROMPT_TOKENS;
+  return Number(raw) || 0;
+})();
 
 /** Empty allowlist means "allow everything" — the sane default for a generic bridge. */
 const MODEL_ALLOWLIST = new Set(

@@ -31,7 +31,7 @@ Everything lives under the `workbuddy-codex` entry's `config` in the profile's `
 | `provider.autoCheckin` | `true` | Claim the daily WorkBuddy checkin. |
 | `gateway.acceptStatus` | `[200, 503]` | The gateway answers `503` while running without a usable account — alive, not down. |
 | `bridge.conversationId` | `auto` | Not optional against a WorkBuddy gateway: without it the upstream answers `400 / 11-128` and the gateway disables the account. |
-| `bridge.maxPromptTokens` | `0` (off) | Above this estimated prompt size the bridge answers `413` locally instead of forwarding a body the upstream rejects with `400 prompt_too_long`. See [Why a local prompt ceiling](#why-a-local-prompt-ceiling). |
+| `bridge.maxPromptTokens` | `1200000` | Above this estimated prompt size the bridge answers `413` locally instead of forwarding a body the upstream rejects with `400 prompt_too_long`. `0` turns it off. See [Why a local prompt ceiling](#why-a-local-prompt-ceiling). |
 
 If `dsh-llm-workbuddy` is not installed at all, the plugin still supervises the gateway and the bridge and logs the one command that fixes it (`dsh plugin add dsh-llm-workbuddy`). Nothing throws.
 
