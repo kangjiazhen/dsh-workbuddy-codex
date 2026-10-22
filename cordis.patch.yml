@@ -7,6 +7,12 @@
 #   gateway  wb2api            127.0.0.1:7863  OpenAI-compatible /v1/chat/completions
 #   bridge   codex-chat-bridge 127.0.0.1:7864  Responses API -> chat/completions
 #
+# One more thing is set up here: the `workbuddy` route in the model picker. That
+# adapter is not reimplemented — it is mounted from `dsh-llm-workbuddy`, so a
+# single install covers provider + gateway + bridge. When that plugin is also
+# enabled standalone, whoever registers the route first keeps it and the other
+# stands down, so both layouts are safe.
+#
 # The bridge is bundled with this plugin, so `bridge.command` stays empty and the
 # shipped entry runs on the harness's own Node. Its upstream, bearer and
 # conversation id are derived: upstream defaults to the gateway above, the bearer
@@ -31,6 +37,19 @@
         probeTimeoutMs: 2000
         # Where the gateway keeps config.json; the bridge reads `api_key` from it.
         gatewayDir: ~/Documents/deepseek-harness/default-workspace/workbuddy2api-panel
+
+        # The WorkBuddy route the model picker offers. Both empty fields below
+        # inherit from the gateway entry, so the port and the api key are
+        # configured exactly once.
+        provider:
+          enabled: true
+          # Empty = follow gateway.baseURL.
+          baseURL: ''
+          # Empty = the gateway's config.json api_key (the same source the bridge uses).
+          apiKey: ''
+          discovery: true
+          autoCheckin: true
+          checkinAfterHour: 10
 
         gateway:
           enabled: true

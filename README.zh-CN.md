@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-一个 DeepSeek Harness 插件，负责把本地 WorkBuddy 反代链路维持在线 —— **包括 OpenAI Codex CLI 需要的那条 Responses 桥**。
+一个 DeepSeek Harness 插件，负责把本地 WorkBuddy 反代链路维持在线 —— 模型选择器的 provider、它背后的网关，**以及 OpenAI Codex CLI 需要的那条 Responses 桥**。
 
 在 WorkBuddy 模型能回答之前，有三样东西必须同时对上，而它们都不会把自己装成 Windows 服务：
 
@@ -10,11 +10,29 @@
 | --- | --- | --- |
 | `127.0.0.1:7863` | `wb2api` 网关 | OpenAI 兼容的 `/v1/chat/completions` |
 | `127.0.0.1:7864` | Responses 桥（**内置**） | Responses API → chat/completions，供 Codex CLI 使用 |
-| — | `dsh-llm-workbuddy` | provider 插件；模型选择器通过它访问 `7863` |
+| — | `workbuddy` provider | 模型选择器里的那条路由，**从 [`dsh-llm-workbuddy`](https://www.npmjs.com/package/dsh-llm-workbuddy) 挂载而来** |
 
 这两个进程过去都要手动启动，于是重启一次电脑之后，模型选择器会悄无声息地指向一个死掉的端口 —— provider 插件加载正常、模型列表正常，直到第一次请求才失败。本插件接管它们：加载时探测各自的健康端点，缺什么就拉起什么，并按定时器复查，进程崩了会自动回来。
 
-它刻意**不重写网关**，只做进程编排。provider 注册仍然由 provider 插件（`dsh-llm-workbuddy` 等）负责 —— 本插件唯一的职责，是保证那些客户端要访问的端口真的有人应答。
+它刻意**既不重写网关，也不 fork 适配器**。网关只做进程编排；provider 路由则是用 `ctx.plugin()` 委派给 `dsh-llm-workbuddy` 挂载出来的 —— 那个包自己拥有约 2500 行的 WorkBuddy 适配器、设置面板和每日签到调度器，再抄一份只会让两边一更新就分叉。所以装一次就同时得到 provider + 网关 + 桥。
+
+这种委派是叠加式的，不是排他的：如果你同时保留独立的 `dsh-llm-workbuddy`，谁先注册这条路由谁就拥有它，另一个会在日志里说明后退让，两种装法都安全。
+
+## 配置项
+
+全部位于 profile 的 `cordis.yml` 中 `workbuddy-stack` 条目的 `config` 下；随包发布的 `cordis.patch.yml` 里是完整的默认值。
+
+| 键 | 默认值 | 作用 |
+| --- | --- | --- |
+| `gatewayDir` | `~/Documents/deepseek-harness/default-workspace/workbuddy2api-panel` | 网关存放 `config.json` 的目录。其中的 `api_key` 会同时用于**桥和 provider**，所以端口与密钥只需配一次。 |
+| `provider.enabled` | `true` | 是否注册 `workbuddy` 路由。 |
+| `provider.baseURL` | *(留空 → 用 `gateway.baseURL`)* | 适配器要访问的网关地址。 |
+| `provider.discovery` | `true` | 向网关的 `/v1/models` 拉取实时模型目录。 |
+| `provider.autoCheckin` | `true` | 领取 WorkBuddy 每日签到。 |
+| `gateway.acceptStatus` | `[200, 503]` | 网关在无可用账号时仍会跑着并返回 `503`，那是活着，不是挂了。 |
+| `bridge.conversationId` | `auto` | 对着 WorkBuddy 网关不是可选项：缺了它上游会回 `400 / 11-128`，网关随即停用该账号。 |
+
+如果根本没装 `dsh-llm-workbuddy`，插件照旧监护网关与桥，并打印出补装它的那一条命令（`dsh plugin add dsh-llm-workbuddy`）。任何情况下都不会抛错。
 
 ## 为什么桥是内置的
 

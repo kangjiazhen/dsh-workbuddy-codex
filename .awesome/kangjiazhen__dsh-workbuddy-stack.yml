@@ -2,5 +2,5 @@ url: https://github.com/kangjiazhen/dsh-workbuddy-stack
 name: kangjiazhen/dsh-workbuddy-stack
 category: model
 description:
-  en: 'Keeps the local WorkBuddy reverse-proxy chain answering: supervises the wb2api gateway and a bundled Responses API bridge, so OpenAI Codex CLI and the model picker both find a live port after a reboot.'
-  zh: '守住本地 WorkBuddy 反代链路：托管 wb2api 网关与内置 Responses API 桥，重启后 Codex CLI 与模型选择器都能找到活着的端口。'
+  en: 'Registers the workbuddy model provider by mounting dsh-llm-workbuddy, supervises the local wb2api gateway, and runs a bundled Responses-to-chat-completions bridge so Codex CLI can use the same gateway. Skips work that is already running or already registered, and reports each part through a status tool.'
+  zh: '通过挂载 dsh-llm-workbuddy 注册 workbuddy 模型 provider，托管本地 wb2api 网关，并内置 Responses 到 chat/completions 的转换桥，让 Codex CLI 也能用同一个网关。已在运行或已注册的部分会跳过，并通过状态工具汇报各环节状况。'

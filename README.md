@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-A DeepSeek Harness plugin that keeps the local WorkBuddy reverse-proxy chain alive — **including the Responses bridge that OpenAI Codex CLI needs**.
+A DeepSeek Harness plugin that keeps the local WorkBuddy reverse-proxy chain alive — the model picker's provider, the gateway behind it, **and the Responses bridge that OpenAI Codex CLI needs**.
 
 Three things have to line up before a WorkBuddy model can answer, and none of them installs itself as a Windows service:
 
@@ -10,11 +10,29 @@ Three things have to line up before a WorkBuddy model can answer, and none of th
 | --- | --- | --- |
 | `127.0.0.1:7863` | `wb2api` gateway | OpenAI-compatible `/v1/chat/completions` |
 | `127.0.0.1:7864` | Responses bridge (**bundled**) | Responses API → chat/completions, for Codex CLI |
-| — | `dsh-llm-workbuddy` | provider plugin; talks to `7863` for the model picker |
+| — | `workbuddy` provider | the model-picker route, **mounted from [`dsh-llm-workbuddy`](https://www.npmjs.com/package/dsh-llm-workbuddy)** |
 
 Both processes used to be started by hand, so a reboot silently left the model picker pointing at a dead port — the provider plugin loaded fine, listed models fine, and failed on the first request. This plugin supervises them: on load it probes each health endpoint, spawns whatever is missing, and re-checks on a timer so a crashed process comes back.
 
-It deliberately **does not reimplement the gateway**. It only orchestrates processes. Provider registration stays with the provider plugin (`dsh-llm-workbuddy` and friends) — this plugin's job is making sure the ports those clients talk to are actually answering.
+It deliberately **does not reimplement the gateway, and does not fork the adapter either**. The gateway is orchestrated as a process. The provider route is mounted by delegating to `dsh-llm-workbuddy` with `ctx.plugin()` — that package owns the ~2.5k-line WorkBuddy adapter, its settings section and its daily checkin scheduler, and a second copy of all that would drift the moment either side is updated. So one install covers provider + gateway + bridge.
+
+The delegation is additive, not exclusive: if you also keep `dsh-llm-workbuddy` enabled standalone, whichever plugin registers the route first keeps it and the other stands down with a log line, so both layouts are safe.
+
+## Settings
+
+Everything lives under the `workbuddy-stack` entry's `config` in the profile's `cordis.yml`; the shipped `cordis.patch.yml` has the full default set.
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `gatewayDir` | `~/Documents/deepseek-harness/default-workspace/workbuddy2api-panel` | Where the gateway keeps `config.json`. The `api_key` in it is used for **both** the bridge and the provider, so the port and the key are configured once. |
+| `provider.enabled` | `true` | Register the `workbuddy` route. |
+| `provider.baseURL` | *(empty → `gateway.baseURL`)* | Gateway URL for the adapter. |
+| `provider.discovery` | `true` | Ask the gateway's `/v1/models` for the live catalog. |
+| `provider.autoCheckin` | `true` | Claim the daily WorkBuddy checkin. |
+| `gateway.acceptStatus` | `[200, 503]` | The gateway answers `503` while running without a usable account — alive, not down. |
+| `bridge.conversationId` | `auto` | Not optional against a WorkBuddy gateway: without it the upstream answers `400 / 11-128` and the gateway disables the account. |
+
+If `dsh-llm-workbuddy` is not installed at all, the plugin still supervises the gateway and the bridge and logs the one command that fixes it (`dsh plugin add dsh-llm-workbuddy`). Nothing throws.
 
 ## Why the bridge is bundled
 
