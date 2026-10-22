@@ -483,6 +483,15 @@ describe('bridgeLaunchSpec', () => {
     assert.equal(bridgeLaunchSpec(cfg(), silentLogger).env.CCB_MODEL_ALLOWLIST, undefined);
   });
 
+  it('hands the prompt ceiling to the bridge when one is configured', () => {
+    const spec = bridgeLaunchSpec(cfg({ maxPromptTokens: 1048576 }), silentLogger);
+    assert.equal(spec.env.CCB_MAX_PROMPT_TOKENS, '1048576');
+  });
+
+  it('leaves the prompt ceiling unset at 0, so the precheck stays off', () => {
+    assert.equal(bridgeLaunchSpec(cfg(), silentLogger).env.CCB_MAX_PROMPT_TOKENS, undefined);
+  });
+
   it('delegates to a custom command and still hands it the port', () => {
     const spec = bridgeLaunchSpec(cfg({ command: 'node', args: ['custom.mjs'] }), silentLogger);
     assert.equal(spec.command, 'node');

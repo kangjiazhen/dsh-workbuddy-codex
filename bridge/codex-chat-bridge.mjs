@@ -65,6 +65,10 @@ Environment
   CCB_INCLUDE_USAGE      1 (default) to ask the backend for token usage
   CCB_CAPTURE            Directory; dump every inbound Responses request body
   CCB_TIMEOUT_MS         Upstream request timeout (default 600000)
+  CCB_MAX_PROMPT_TOKENS  Refuse locally above this estimated prompt size, with
+                         a readable 413, instead of letting the upstream answer
+                         400 prompt_too_long (which returns no usage and leaves
+                         the client unable to compact). 0 = disabled.
 
 Codex config (~/.codex/config.toml)
 
@@ -117,6 +121,18 @@ const INCLUDE_USAGE = process.env.CCB_INCLUDE_USAGE !== '0';
 const TIMEOUT_MS = Number(process.env.CCB_TIMEOUT_MS || 600000);
 const CONV_MODE = process.env.CCB_CONVERSATION_ID || '';
 
+/**
+ * Fail-fast prompt ceiling, in tokens. Empty/0 disables the precheck.
+ *
+ * Without it an oversized body is still forwarded, the upstream answers 400
+ * `prompt_too_long`, and that 400 carries no `usage` — so the client cannot learn
+ * how big it really is, keeps resending the same body, and never compacts. The
+ * request also burns an upstream account and can trip its rate-limit cooldown.
+ * Answering locally with a readable 413 keeps the account untouched and says how
+ * much to cut. `CCB_MAX_PROMPT_TOKENS=1048576` matches a 1M-token upstream.
+ */
+const MAX_PROMPT_TOKENS = Number(process.env.CCB_MAX_PROMPT_TOKENS || 0);
+
 /** Empty allowlist means "allow everything" — the sane default for a generic bridge. */
 const MODEL_ALLOWLIST = new Set(
   (process.env.CCB_MODEL_ALLOWLIST || '')
@@ -168,6 +184,78 @@ function contentToText(content) {
   return parts.map((p) => (typeof p === 'string'
     ? { type: 'text', text: p }
     : { type: 'image_url', image_url: { url: p.__image } }));
+}
+
+/** Placeholder left behind when a tool result carried images we cannot forward. */
+const omittedImages = (n) => `[${n} image${n === 1 ? '' : 's'} omitted: Chat Completions `
+  + 'tool messages carry text only]';
+
+/**
+ * Flatten a tool result into the string that a `role: "tool"` message requires.
+ *
+ * Chat Completions tool messages are text-only, so an image in a tool result has
+ * no multimodal slot to land in. `JSON.stringify` used to be applied blindly,
+ * which turned the data URL into literal text: a 1080p screenshot became ~570k
+ * base64 characters, and the upstream tokenizer charged roughly one token per
+ * character for it. A single such result measured 280k-594k input tokens — one
+ * image was enough to blow a 1M-token context in a single step, and because the
+ * resulting 400 carries no `usage`, the client's own token counter froze and its
+ * auto-compaction never fired. Images are therefore dropped and counted here;
+ * everything textual is preserved verbatim.
+ *
+ * @param {unknown} output A Responses `function_call_output.output`.
+ * @returns {string}
+ */
+function outputToContent(output) {
+  if (typeof output === 'string') return output;
+  if (!Array.isArray(output)) return JSON.stringify(output ?? '');
+
+  const texts = [];
+  let images = 0;
+  for (const p of output) {
+    if (!p || typeof p !== 'object') {
+      if (typeof p === 'string') texts.push(p);
+      continue;
+    }
+    if (p.type === 'input_image' || p.type === 'image_url') {
+      images += 1;
+    } else if (typeof p.text === 'string') {
+      texts.push(p.text);
+    } else if (typeof p.output_text === 'string') {
+      texts.push(p.output_text);
+    }
+  }
+  if (images > 0) texts.push(omittedImages(images));
+  return texts.join('\n');
+}
+
+/**
+ * Rough prompt-size estimate, used only to fail fast and legibly. Text is
+ * ~4 chars/token; a long base64 run is ~1 char/token (that is what the upstream
+ * tokenizer actually charges), so runs of base64 are weighted separately.
+ * An image part is billed as a fixed vision cost, not by its data URL length.
+ */
+const BASE64_RUN = /[A-Za-z0-9+/]{200,}={0,2}/g;
+
+function estimatePromptTokens(chat) {
+  let tokens = 0;
+  const addText = (s) => {
+    let b64 = 0;
+    for (const m of s.match(BASE64_RUN) || []) b64 += m.length;
+    tokens += Math.ceil((s.length - b64) / 4) + b64;
+  };
+  for (const m of chat.messages || []) {
+    if (typeof m.content === 'string') addText(m.content);
+    else if (Array.isArray(m.content)) {
+      for (const part of m.content) {
+        if (part?.type === 'text') addText(part.text ?? '');
+        else if (part?.type === 'image_url') tokens += 1600;
+      }
+    }
+    for (const c of m.tool_calls || []) addText(String(c.function?.arguments ?? ''));
+  }
+  for (const t of chat.tools || []) tokens += Math.ceil(JSON.stringify(t).length / 4);
+  return tokens;
 }
 
 /**
@@ -275,7 +363,7 @@ function convertInput(input, instructions) {
       messages.push({
         role: 'tool',
         tool_call_id: it.call_id || it.id,
-        content: typeof it.output === 'string' ? it.output : JSON.stringify(it.output ?? ''),
+        content: outputToContent(it.output),
       });
     } else if (type === 'local_shell_call' || type === 'custom_tool_call') {
       pendingCalls.push({
@@ -288,7 +376,7 @@ function convertInput(input, instructions) {
       messages.push({
         role: 'tool',
         tool_call_id: it.call_id || it.id,
-        content: typeof it.output === 'string' ? it.output : JSON.stringify(it.output ?? ''),
+        content: outputToContent(it.output),
       });
     }
     // `reasoning` items are not fed back to the backend.
@@ -707,6 +795,7 @@ const server = createServer(async (req, res) => {
       upstream: BASE,
       model_allowlist: MODEL_ALLOWLIST.size ? [...MODEL_ALLOWLIST] : 'all',
       conversation_id: CONV_MODE || 'off',
+      max_prompt_tokens: MAX_PROMPT_TOKENS || 'off',
     }));
     return;
   }
@@ -767,6 +856,25 @@ const server = createServer(async (req, res) => {
     `msgs=${chatReq.messages.length}`, `tools=${chatReq.tools?.length ?? 0}`,
     `stream=${body.stream !== false}`);
 
+  if (MAX_PROMPT_TOKENS > 0) {
+    const estimated = estimatePromptTokens(chatReq);
+    if (estimated > MAX_PROMPT_TOKENS) {
+      // Local refusal: no upstream account is spent, and the message is
+      // actionable. The upstream's own 400 returns no usage, so a client that
+      // only learns its size from `usage` would stay blind here.
+      log('prompt too large, refusing locally:', `est=${estimated}`, `max=${MAX_PROMPT_TOKENS}`);
+      jsonError(
+        res, 413,
+        `bridge: prompt is about ${estimated} tokens, over the ${MAX_PROMPT_TOKENS}-token `
+          + 'ceiling, so the request was not sent upstream. Reduce history or start a new '
+          + 'conversation. Images inside tool results are already dropped (a tool message '
+          + 'is text-only), so check for large tool output or a very long transcript.',
+        'prompt_too_long',
+      );
+      return;
+    }
+  }
+
   let upstream;
   try {
     upstream = await fetch(`${BASE}/chat/completions`, {
@@ -802,11 +910,15 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  log(`${SERVICE} ${VERSION} listening on http://${HOST}:${PORT} -> ${BASE}`);
+  // Report the bound port, not the requested one: `--port 0` asks the OS to pick,
+  // and a test harness needs the real number.
+  const bound = server.address().port;
+  log(`${SERVICE} ${VERSION} listening on http://${HOST}:${bound} -> ${BASE}`);
   if (!API_KEY) log('note: no CCB_API_KEY / OPENAI_API_KEY set; sending no Authorization header');
   if (MODEL_ALLOWLIST.size) log(`model allowlist: ${[...MODEL_ALLOWLIST].join(', ')}`);
   if (MODEL_MAP.size) log(`model map: ${[...MODEL_MAP].map(([a, b]) => `${a}->${b}`).join(', ')}`);
   if (CAPTURE) log(`capturing inbound request bodies to ${CAPTURE}`);
+  if (MAX_PROMPT_TOKENS > 0) log(`prompt ceiling: ~${MAX_PROMPT_TOKENS} tokens (local 413 above it)`);
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
