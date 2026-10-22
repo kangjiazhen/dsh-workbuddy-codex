@@ -64,6 +64,19 @@ dsh plugin add file:/path/to/dsh-workbuddy-stack
 
 插件自带 `cordis.patch.yml`，所以只要它成为 profile 依赖，profile 就会自动拿到 `workbuddy-stack` 这一条。
 
+### 从 dsh-llm-workbuddy 迁移
+
+本包已经覆盖了它原本的功能，所以如果 profile 里原本启用了它，需要改一处：把 profile 的 `package.json` 中 `dsh.profile.bundles` 里的那一行删掉，依赖保留。
+
+```jsonc
+"dsh": { "profile": { "bundles": [
+  // "dsh-llm-workbuddy",   <- 删掉这一行
+  "dsh-workbuddy-stack"
+] } }
+```
+
+包本身必须留着 —— 本插件要 import 它来挂载 provider，而且适配器只有这一份，不存在第二份会分叉的代码。两个都留在 `bundles` 里也不会有害：先注册的那个拥有路由，另一个在日志里记一句 `already-served`；但那样服务你模型的是它而不是本插件，本插件「一次装好」的意义也就没了。
+
 ### git 安装失败的话
 
 除非另有指定，`pnpm` 会把 `git+https://…` 改写成 `git+ssh://git@…`，因此在没有配置 GitHub SSH 密钥的机器上，安装会失败并报 `Permission denied (publickey)`：

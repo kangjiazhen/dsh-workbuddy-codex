@@ -64,6 +64,19 @@ dsh plugin add file:/path/to/dsh-workbuddy-stack
 
 The plugin ships a `cordis.patch.yml`, so the profile picks up the `workbuddy-stack` entry automatically once the package is a profile dependency.
 
+### Coming from dsh-llm-workbuddy
+
+This package now covers what that one did, so a profile that already had it enabled needs one edit: drop it from `dsh.profile.bundles` in the profile's `package.json` and leave it in `dependencies`.
+
+```jsonc
+"dsh": { "profile": { "bundles": [
+  // "dsh-llm-workbuddy",   <- remove this line
+  "dsh-workbuddy-stack"
+] } }
+```
+
+The package itself has to stay installed — this plugin imports it to mount the provider, and there is no second copy of the adapter to drift. Leaving both in `bundles` is not harmful either: the first one to register keeps the route and the other logs `already-served`, but then this plugin is not the thing serving your models, which defeats the point.
+
 ### If the git install fails
 
 `pnpm` rewrites `git+https://…` to `git+ssh://git@…` unless told otherwise, so an install on a machine without GitHub SSH keys fails with `Permission denied (publickey)`:
