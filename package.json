@@ -1,6 +1,6 @@
 {
   "name": "dsh-workbuddy-codex",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "DeepSeek Harness plugin that keeps the local WorkBuddy chain answering: registers the workbuddy model provider (mounted from dsh-llm-workbuddy), supervises the wb2api gateway, and runs the bundled Responses API bridge so Codex works too",
   "type": "module",
   "main": "lib/index.js",
@@ -48,7 +48,8 @@
     "./provider": "./lib/provider.js",
     "./bridge/codex-chat-bridge.mjs": "./bridge/codex-chat-bridge.mjs",
     "./cordis.patch.yml": "./cordis.patch.yml",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./status-tool": "./lib/status-tool.js"
   },
   "files": [
     "lib",
@@ -62,5 +63,8 @@
   ],
   "peerDependencies": {
     "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "dependencies": {
+    "dsh-llm-workbuddy": "^0.1.27"
   }
 }

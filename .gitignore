@@ -4,3 +4,6 @@ node_modules/
 Thumbs.db
 .capture/
 req-*.json
+
+# marketplace submission draft (kept local)
+.awesome/

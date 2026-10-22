@@ -211,7 +211,7 @@ bridge: up (http://127.0.0.1:7864/healthz)
 
 Each line carries the live probe result, the supervised child pid, and the last spawn error if there was one — so "the model list is empty" can be told apart from "the port is dead" without reading logs.
 
-If `@deepseek-ai/dsh-tools` is not importable, the tool is still registered from the raw descriptor; if the `tools` seam is absent, the supervisor still runs. Neither is required for the other.
+If `@deepseek-ai/dsh-tools` is not importable, the tool is skipped with a warning rather than registered half-formed: `tools.register()` requires the `defineTool` shape (an `output { schema, render }` pair) and rejects anything else, so a raw descriptor would fail silently and the model would never see the tool. The supervisor and the provider run either way — neither depends on the tool.
 
 ## Lifecycle
 
