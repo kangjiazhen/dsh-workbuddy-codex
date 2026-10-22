@@ -186,47 +186,89 @@ function contentToText(content) {
     : { type: 'image_url', image_url: { url: p.__image } }));
 }
 
-/** Placeholder left behind when a tool result carried images we cannot forward. */
-const omittedImages = (n) => `[${n} image${n === 1 ? '' : 's'} omitted: Chat Completions `
-  + 'tool messages carry text only]';
+/** In-band note that a tool result's images were moved, not lost. */
+const omittedImages = (n) => `[${n} image${n === 1 ? '' : 's'} attached in the next user `
+  + 'message: a tool message carries text only]';
 
 /**
- * Flatten a tool result into the string that a `role: "tool"` message requires.
+ * Last line of defence for tool results: strip any inline image data that
+ * survived flattening.
  *
- * Chat Completions tool messages are text-only, so an image in a tool result has
- * no multimodal slot to land in. `JSON.stringify` used to be applied blindly,
- * which turned the data URL into literal text: a 1080p screenshot became ~570k
- * base64 characters, and the upstream tokenizer charged roughly one token per
- * character for it. A single such result measured 280k-594k input tokens — one
- * image was enough to blow a 1M-token context in a single step, and because the
- * resulting 400 carries no `usage`, the client's own token counter froze and its
- * auto-compaction never fired. Images are therefore dropped and counted here;
- * everything textual is preserved verbatim.
+ * The shapes above cover what Codex sends today, but an unrecognised shape
+ * falling back to `JSON.stringify` would reintroduce the exact bug this file is
+ * fixing — and it would be invisible, because the request still succeeds and
+ * only the bill changes. A `data:` URL and a long base64 run are both cheap to
+ * recognise, so anything left is replaced here rather than trusted.
+ */
+const DATA_URL = /data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi;
+
+function scrubInlineImages(text) {
+  const urls = [];
+  let scrubbed = 0;
+  let out = text.replace(DATA_URL, (m) => { urls.push(m); scrubbed += 1; return ''; });
+  out = out.replace(/[A-Za-z0-9+/]{4000,}={0,2}/g, () => { scrubbed += 1; return ''; });
+  return { text: out, urls, scrubbed };
+}
+
+/**
+ * Split a tool result into the text a `role: "tool"` message can carry and the
+ * image URLs it cannot.
+ *
+ * Chat Completions tool messages are text-only, so an image has no slot there.
+ * Stringifying instead put the whole data URL into the prompt as literal text,
+ * and the upstream tokenizer charged roughly one token per character: one 1080p
+ * screenshot measured 280k-594k input tokens, enough to fill a 1M context in a
+ * single step. The text is kept verbatim; the images are returned so the caller
+ * can hand them to a channel that does accept them.
  *
  * @param {unknown} output A Responses `function_call_output.output`.
- * @returns {string}
+ * @returns {{text: string, images: string[]}}
  */
-function outputToContent(output) {
-  if (typeof output === 'string') return output;
-  if (!Array.isArray(output)) return JSON.stringify(output ?? '');
-
+function splitOutput(output) {
   const texts = [];
-  let images = 0;
-  for (const p of output) {
-    if (!p || typeof p !== 'object') {
-      if (typeof p === 'string') texts.push(p);
-      continue;
+  const images = [];
+
+  const walk = (v) => {
+    if (typeof v === 'string') { texts.push(v); return; }
+    if (Array.isArray(v)) { for (const p of v) walk(p); return; }
+    if (v && typeof v === 'object') {
+      if (v.type === 'input_image' || v.type === 'image_url') {
+        // `image_url` is a string in Responses and an object in Chat
+        // Completions; accept both so a replayed body works either way.
+        const url = typeof v.image_url === 'string'
+          ? v.image_url
+          : (v.image_url?.url || v.url);
+        if (typeof url === 'string' && url) images.push(url);
+        return;
+      }
+      if (typeof v.text === 'string') { texts.push(v.text); return; }
+      if (typeof v.output_text === 'string') { texts.push(v.output_text); return; }
+      texts.push(JSON.stringify(v));
+      return;
     }
-    if (p.type === 'input_image' || p.type === 'image_url') {
-      images += 1;
-    } else if (typeof p.text === 'string') {
-      texts.push(p.text);
-    } else if (typeof p.output_text === 'string') {
-      texts.push(p.output_text);
-    }
-  }
-  if (images > 0) texts.push(omittedImages(images));
-  return texts.join('\n');
+    if (v != null) texts.push(String(v));
+  };
+
+  walk(output);
+  return { text: texts.join('\n'), images };
+}
+
+/**
+ * How many images from one tool result may be re-attached to the conversation.
+ * Each costs a normal vision budget, so a runaway tool cannot inflate the prompt;
+ * anything past the cap is reported rather than silently dropped.
+ */
+const MAX_HOISTED_IMAGES = 8;
+
+/** A user message that re-attaches images a tool result could not carry. */
+function imagesAsUserMessage(urls, label) {
+  return {
+    role: 'user',
+    content: [
+      { type: 'text', text: `${label} (image${urls.length === 1 ? '' : 's'} from the tool result above)` },
+      ...urls.map((url) => ({ type: 'image_url', image_url: { url } })),
+    ],
+  };
 }
 
 /**
@@ -337,6 +379,44 @@ function convertInput(input, instructions) {
     }
   };
 
+  // Images that a tool result could not carry. They are re-attached as one user
+  // message *after* the whole run of tool results, because inserting a user
+  // message between two `role:"tool"` messages would break their pairing with
+  // the assistant `tool_calls` that produced them.
+  let pendingImages = [];
+  let imageLabel = '';
+  const flushImages = () => {
+    if (!pendingImages.length) return;
+    const capped = pendingImages.slice(0, MAX_HOISTED_IMAGES);
+    const dropped = pendingImages.length - capped.length;
+    const note = dropped > 0
+      ? `${imageLabel} — ${dropped} further image(s) omitted (cap ${MAX_HOISTED_IMAGES} per tool result)`
+      : imageLabel;
+    messages.push(imagesAsUserMessage(capped, note));
+    pendingImages = [];
+    imageLabel = '';
+  };
+
+  /**
+   * Push a `role:"tool"` message for a tool result, keeping its text there and
+   * diverting any images to `pendingImages`.
+   */
+  const pushToolResult = (callId, output) => {
+    const { text, images } = splitOutput(output);
+    const scrubbed = scrubInlineImages(text);
+    const all = [...images, ...scrubbed.urls];
+
+    let content = scrubbed.text;
+    if (all.length > 0) {
+      // Say so in-band too: the tool text is what the model reads first, and a
+      // silent disappearance reads as "the tool returned nothing".
+      content = `${content}\n${omittedImages(all.length)}`.trim();
+      pendingImages.push(...all);
+      imageLabel = `Images returned by tool call ${callId}`;
+    }
+    messages.push({ role: 'tool', tool_call_id: callId, content });
+  };
+
   for (const it of items) {
     if (!it || typeof it !== 'object') continue;
     const type = it.type || (it.role ? 'message' : undefined);
@@ -345,6 +425,9 @@ function convertInput(input, instructions) {
       const role = it.role === 'developer' ? 'system' : (it.role || 'user');
       const content = contentToText(it.content);
       flushPending();
+      // A new turn starts here, so the images from the previous tool run can be
+      // attached now, still ahead of this message.
+      flushImages();
       if (role === 'assistant') {
         const text = typeof content === 'string' ? content : '';
         if (text) messages.push({ role: 'assistant', content: text });
@@ -360,11 +443,7 @@ function convertInput(input, instructions) {
       });
     } else if (type === 'function_call_output') {
       flushPending();
-      messages.push({
-        role: 'tool',
-        tool_call_id: it.call_id || it.id,
-        content: outputToContent(it.output),
-      });
+      pushToolResult(it.call_id || it.id, it.output);
     } else if (type === 'local_shell_call' || type === 'custom_tool_call') {
       pendingCalls.push({
         id: it.call_id || it.id,
@@ -373,15 +452,12 @@ function convertInput(input, instructions) {
       });
     } else if (type === 'custom_tool_call_output' || type === 'local_shell_call_output') {
       flushPending();
-      messages.push({
-        role: 'tool',
-        tool_call_id: it.call_id || it.id,
-        content: outputToContent(it.output),
-      });
+      pushToolResult(it.call_id || it.id, it.output);
     }
     // `reasoning` items are not fed back to the backend.
   }
   flushPending();
+  flushImages();
   return messages;
 }
 

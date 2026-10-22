@@ -115,7 +115,7 @@ describe('bridge: images inside tool results', () => {
     upstream?.server.close();
   });
 
-  it('never forwards the base64 payload upstream', async () => {
+  it('never forwards the base64 payload as literal text', async () => {
     upstream.seen.length = 0;
     const r = await post(bridge.baseURL, imageToolOutputRequest());
     assert.equal(r.status, 200, JSON.stringify(r.body));
@@ -134,12 +134,33 @@ describe('bridge: images inside tool results', () => {
     );
   });
 
-  it('keeps the textual part and notes how many images were dropped', async () => {
+  it('re-attaches the image as a real image part in a following user message', async () => {
+    upstream.seen.length = 0;
+    await post(bridge.baseURL, imageToolOutputRequest());
+    const sent = upstream.seen.at(-1);
+
+    const withImage = sent.messages.filter(
+      (m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'),
+    );
+    assert.equal(withImage.length, 1, 'exactly one message should carry the image');
+    const carrier = withImage[0];
+    assert.equal(carrier.role, 'user', 'images must ride on a user message');
+    const parts = carrier.content.filter((p) => p.type === 'image_url');
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0].image_url.url, `data:image/jpeg;base64,${BIG_B64}`);
+
+    // The image must come after the tool message, or the tool_calls pairing breaks.
+    const toolIdx = sent.messages.findIndex((m) => m.role === 'tool');
+    const imgIdx = sent.messages.indexOf(carrier);
+    assert.ok(imgIdx > toolIdx, 'the carrier must follow the tool result');
+  });
+
+  it('keeps the textual part in the tool message and notes where the image went', async () => {
     upstream.seen.length = 0;
     await post(bridge.baseURL, imageToolOutputRequest());
     const toolMsg = upstream.seen.at(-1).messages.find((m) => m.role === 'tool');
     assert.match(toolMsg.content, /captured 1206x759/);
-    assert.match(toolMsg.content, /1 image omitted/);
+    assert.match(toolMsg.content, /1 image attached in the next user message/);
   });
 
   it('still passes images in user messages through as image parts', async () => {
@@ -159,6 +180,81 @@ describe('bridge: images inside tool results', () => {
     const userMsg = upstream.seen.at(-1).messages.find((m) => m.role === 'user');
     assert.ok(Array.isArray(userMsg.content), 'user content must stay multimodal');
     assert.ok(userMsg.content.some((p) => p.type === 'image_url'));
+  });
+
+  it('hoists an image when output is a bare part object, not an array', async () => {
+    upstream.seen.length = 0;
+    await post(bridge.baseURL, {
+      model: 'test-model',
+      stream: false,
+      input: [
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'go' }] },
+        { type: 'function_call', call_id: 'call_2', name: 'screenshot', arguments: '{}' },
+        {
+          type: 'function_call_output',
+          call_id: 'call_2',
+          // Not wrapped in an array — this shape used to reach JSON.stringify.
+          output: { type: 'input_image', image_url: `data:image/jpeg;base64,${BIG_B64}` },
+        },
+      ],
+    });
+    const sent = upstream.seen.at(-1);
+    const toolMsg = sent.messages.find((m) => m.role === 'tool');
+    assert.ok(!toolMsg.content.includes('base64'), 'a bare-part image must not leak as text');
+    assert.ok(toolMsg.content.length < 200, `was ${toolMsg.content.length} chars`);
+    const carrier = sent.messages.find(
+      (m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'),
+    );
+    assert.ok(carrier, 'the bare-part image must still be forwarded as an image part');
+  });
+
+  it('hoists a data URL that arrives already embedded in a tool text string', async () => {
+    upstream.seen.length = 0;
+    await post(bridge.baseURL, {
+      model: 'test-model',
+      stream: false,
+      input: [
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'go' }] },
+        { type: 'function_call', call_id: 'call_3', name: 'shot', arguments: '{}' },
+        {
+          type: 'function_call_output',
+          call_id: 'call_3',
+          output: `screenshot saved\n![img](data:image/png;base64,${BIG_B64})`,
+        },
+      ],
+    });
+    const sent = upstream.seen.at(-1);
+    const toolMsg = sent.messages.find((m) => m.role === 'tool');
+    assert.ok(!toolMsg.content.includes('base64'), 'an embedded data URL must be scrubbed');
+    assert.match(toolMsg.content, /screenshot saved/, 'surrounding text must survive');
+    const carrier = sent.messages.find(
+      (m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'),
+    );
+    assert.ok(carrier, 'an embedded data URL must still be forwarded as an image');
+    assert.equal(carrier.content.filter((p) => p.type === 'image_url').length, 1);
+  });
+
+  it('caps how many images one tool result may hoist', async () => {
+    upstream.seen.length = 0;
+    const many = Array.from({ length: 11 }, () => ({
+      type: 'input_image',
+      image_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==',
+    }));
+    await post(bridge.baseURL, {
+      model: 'test-model',
+      stream: false,
+      input: [
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'go' }] },
+        { type: 'function_call', call_id: 'call_4', name: 'shots', arguments: '{}' },
+        { type: 'function_call_output', call_id: 'call_4', output: many },
+      ],
+    });
+    const sent = upstream.seen.at(-1);
+    const carrier = sent.messages.find(
+      (m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'),
+    );
+    assert.equal(carrier.content.filter((p) => p.type === 'image_url').length, 8);
+    assert.match(JSON.stringify(carrier.content), /3 further image\(s\) omitted/);
   });
 });
 
