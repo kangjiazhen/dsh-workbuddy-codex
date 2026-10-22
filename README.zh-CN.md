@@ -1,4 +1,4 @@
-# dsh-workbuddy-stack
+# dsh-workbuddy-codex
 
 [English](README.md) | **简体中文**
 
@@ -20,7 +20,7 @@
 
 ## 配置项
 
-全部位于 profile 的 `cordis.yml` 中 `workbuddy-stack` 条目的 `config` 下；随包发布的 `cordis.patch.yml` 里是完整的默认值。
+全部位于 profile 的 `cordis.yml` 中 `workbuddy-codex` 条目的 `config` 下；随包发布的 `cordis.patch.yml` 里是完整的默认值。
 
 | 键 | 默认值 | 作用 |
 | --- | --- | --- |
@@ -53,16 +53,16 @@ Codex CLI --(Responses)--> 桥 :7864 --(ChatCompletions)--> 网关 :7863 --> Wor
 ## 安装
 
 ```bash
-dsh plugin add git+https://github.com/kangjiazhen/dsh-workbuddy-stack.git
+dsh plugin add git+https://github.com/kangjiazhen/dsh-workbuddy-codex.git
 ```
 
 或者从本地检出安装：
 
 ```bash
-dsh plugin add file:/path/to/dsh-workbuddy-stack
+dsh plugin add file:/path/to/dsh-workbuddy-codex
 ```
 
-插件自带 `cordis.patch.yml`，所以只要它成为 profile 依赖，profile 就会自动拿到 `workbuddy-stack` 这一条。
+插件自带 `cordis.patch.yml`，所以只要它成为 profile 依赖，profile 就会自动拿到 `workbuddy-codex` 这一条。
 
 ### 从 dsh-llm-workbuddy 迁移
 
@@ -71,7 +71,7 @@ dsh plugin add file:/path/to/dsh-workbuddy-stack
 ```jsonc
 "dsh": { "profile": { "bundles": [
   // "dsh-llm-workbuddy",   <- 删掉这一行
-  "dsh-workbuddy-stack"
+  "dsh-workbuddy-codex"
 ] } }
 ```
 
@@ -138,13 +138,28 @@ curl -X POST http://127.0.0.1:7863/panel/api/accounts/<uid>/revive
 
 没有它，网关对每个请求都回 `401`。为了不让你手工抄密钥，插件直接从网关的 `config.json` 里读 `api_key`（`gatewayDir` 就是干这个的）并交给桥。只有要覆盖时才设 `bridge.apiKey`。
 
+### 图片能不能进去，取决于模型目录
+
+Codex 在**拼请求之前**会先读 `~/.codex/models.json`。如果所选模型的条目里 `input_modalities` 没有 `image`，Codex 自己就会把附件替换成一句 `image content omitted because you do not support image input` —— 桥根本收不到图，模型只能去读文件或者瞎猜。
+
+所以凡是网关报 `supports_images: true` 的模型，条目里必须写上：
+
+```json
+{
+  "slug": "cn:deepseek-v4.1-flash",
+  "input_modalities": ["text", "image"]
+}
+```
+
+桥对 `input_image` 是原样透传的（转成 `{"type":"image_url","image_url":{"url":"data:..."}}`），所以 Codex 侧图被吞掉，唯一原因就是目录条目不认图。以 `GET /v1/models` 返回的 `supports_images` 为准。
+
 ## 配置
 
 默认值假设了常规目录结构，可在 profile 的 `cordis.yml` 中覆盖：
 
 ```yaml
-- id: workbuddy-stack
-  name: dsh-workbuddy-stack
+- id: workbuddy-codex
+  name: dsh-workbuddy-codex
   config:
     intervalMs: 15000        # 复查间隔
     probeTimeoutMs: 2000     # 单次探测超时
@@ -187,7 +202,7 @@ curl -X POST http://127.0.0.1:7863/panel/api/accounts/<uid>/revive
 
 ## 状态工具
 
-当 `tools` 缝挂载后，插件会注册 `workbuddy_stack_status`：
+当 `tools` 缝挂载后，插件会注册 `workbuddy_codex_status`：
 
 ```
 gateway: up (http://127.0.0.1:7863/healthz, pid 14592)

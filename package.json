@@ -1,5 +1,5 @@
 {
-  "name": "dsh-workbuddy-stack",
+  "name": "dsh-workbuddy-codex",
   "version": "0.3.0",
   "description": "DeepSeek Harness plugin that keeps the local WorkBuddy chain answering: registers the workbuddy model provider (mounted from dsh-llm-workbuddy), supervises the wb2api gateway, and runs the bundled Responses API bridge so Codex works too",
   "type": "module",
@@ -22,11 +22,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kangjiazhen/dsh-workbuddy-stack.git"
+    "url": "git+https://github.com/kangjiazhen/dsh-workbuddy-codex.git"
   },
-  "homepage": "https://github.com/kangjiazhen/dsh-workbuddy-stack#readme",
+  "homepage": "https://github.com/kangjiazhen/dsh-workbuddy-codex#readme",
   "bugs": {
-    "url": "https://github.com/kangjiazhen/dsh-workbuddy-stack/issues"
+    "url": "https://github.com/kangjiazhen/dsh-workbuddy-codex/issues"
   },
   "engines": {
     "node": ">=18"

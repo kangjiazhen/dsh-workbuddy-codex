@@ -1,4 +1,4 @@
-# dsh-workbuddy-stack
+# dsh-workbuddy-codex
 
 **English** | [简体中文](README.zh-CN.md)
 
@@ -20,7 +20,7 @@ The delegation is additive, not exclusive: if you also keep `dsh-llm-workbuddy` 
 
 ## Settings
 
-Everything lives under the `workbuddy-stack` entry's `config` in the profile's `cordis.yml`; the shipped `cordis.patch.yml` has the full default set.
+Everything lives under the `workbuddy-codex` entry's `config` in the profile's `cordis.yml`; the shipped `cordis.patch.yml` has the full default set.
 
 | Key | Default | What it does |
 | --- | --- | --- |
@@ -53,16 +53,16 @@ It is the same code as [codex-chat-bridge](https://github.com/kangjiazhen/codex-
 ## Install
 
 ```bash
-dsh plugin add git+https://github.com/kangjiazhen/dsh-workbuddy-stack.git
+dsh plugin add git+https://github.com/kangjiazhen/dsh-workbuddy-codex.git
 ```
 
 Or from a local checkout:
 
 ```bash
-dsh plugin add file:/path/to/dsh-workbuddy-stack
+dsh plugin add file:/path/to/dsh-workbuddy-codex
 ```
 
-The plugin ships a `cordis.patch.yml`, so the profile picks up the `workbuddy-stack` entry automatically once the package is a profile dependency.
+The plugin ships a `cordis.patch.yml`, so the profile picks up the `workbuddy-codex` entry automatically once the package is a profile dependency.
 
 ### Coming from dsh-llm-workbuddy
 
@@ -71,7 +71,7 @@ This package now covers what that one did, so a profile that already had it enab
 ```jsonc
 "dsh": { "profile": { "bundles": [
   // "dsh-llm-workbuddy",   <- remove this line
-  "dsh-workbuddy-stack"
+  "dsh-workbuddy-codex"
 ] } }
 ```
 
@@ -138,13 +138,28 @@ curl -X POST http://127.0.0.1:7863/panel/api/accounts/<uid>/revive
 
 The gateway answers `401` to every request without it. Rather than making you copy the secret, the plugin reads `api_key` straight out of the gateway's `config.json` (that is what `gatewayDir` is for) and hands it to the bridge. Set `bridge.apiKey` only to override that.
 
+### Images only arrive if the model catalog says so
+
+Codex reads `~/.codex/models.json` *before* it builds a request. If the selected model's entry does not list `image` in `input_modalities`, Codex replaces every attachment with the literal string `image content omitted because you do not support image input` — the bridge never sees a picture, and the model falls back to reading the file with a shell tool or guessing.
+
+So for every model the gateway reports as `supports_images: true`, the catalog entry has to say so:
+
+```json
+{
+  "slug": "cn:deepseek-v4.1-flash",
+  "input_modalities": ["text", "image"]
+}
+```
+
+The bridge passes `input_image` through untouched (to `{"type":"image_url","image_url":{"url":"data:..."}}`), so a missing entry is the only thing that can silence images on the Codex side. `GET /v1/models` is the source of truth — `supports_images` there is what the upstream actually accepts.
+
 ## Configuration
 
 The defaults assume the usual layout and can be overridden in the profile's `cordis.yml`:
 
 ```yaml
-- id: workbuddy-stack
-  name: dsh-workbuddy-stack
+- id: workbuddy-codex
+  name: dsh-workbuddy-codex
   config:
     intervalMs: 15000        # re-probe cadence
     probeTimeoutMs: 2000     # per-probe timeout
@@ -187,7 +202,7 @@ Observe without ever spawning. Use this when something else owns the lifecycle �
 
 ## Status tool
 
-When the `tools` seam is mounted, the plugin registers `workbuddy_stack_status`:
+When the `tools` seam is mounted, the plugin registers `workbuddy_codex_status`:
 
 ```
 gateway: up (http://127.0.0.1:7863/healthz, pid 14592)

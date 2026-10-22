@@ -1,4 +1,4 @@
-# dsh-workbuddy-stack — keeps the local WorkBuddy reverse-proxy chain answering.
+# dsh-workbuddy-codex — keeps the local WorkBuddy reverse-proxy chain answering.
 #
 # Two services are supervised here, neither of which installs itself as a
 # Windows service, so a reboot used to leave the model picker pointing at a dead
@@ -27,8 +27,8 @@
 # it — useful when something else (a scheduled task, a container) owns the
 # process lifecycle.
 - insert:
-    - id: workbuddy-stack
-      name: dsh-workbuddy-stack
+    - id: workbuddy-codex
+      name: dsh-workbuddy-codex
       # No hard seam requirements: supervision is useful even where the tools
       # seam is absent, and the status tool attaches through `ctx.inject`.
       inject: []
