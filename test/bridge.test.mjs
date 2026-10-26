@@ -297,3 +297,55 @@ describe('bridge: prompt ceiling', () => {
     assert.equal(upstream.seen.length, 1);
   });
 });
+
+describe('bridge: reasoning effort', () => {
+  let upstream;
+  let bridge;
+
+  before(async () => {
+    upstream = await startFakeUpstream();
+    bridge = await startBridge(upstream.port);
+  });
+
+  after(() => {
+    bridge?.child.kill();
+    upstream?.server.close();
+  });
+
+  const ask = (effort) => ({
+    model: 'test-model',
+    stream: false,
+    reasoning: effort === undefined ? undefined : { effort },
+    input: [{ type: 'message', role: 'user', content: 'hi' }],
+  });
+
+  // Responses carries the level as `reasoning.effort`; chat completions carries
+  // it as the flat `reasoning_effort`. Before the fix every level was dropped on
+  // the floor, so `max` and `low` reached the backend identically and the model
+  // never actually thought harder.
+  it('forwards reasoning.effort as the flat reasoning_effort field', async () => {
+    upstream.seen.length = 0;
+    await post(bridge.baseURL, ask('max'));
+    assert.equal(upstream.seen.at(-1).reasoning_effort, 'max');
+  });
+
+  it('forwards every level the Responses API allows, not just the middle one', async () => {
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      upstream.seen.length = 0;
+      await post(bridge.baseURL, ask(effort));
+      assert.equal(upstream.seen.at(-1).reasoning_effort, effort, `dropped ${effort}`);
+    }
+  });
+
+  it('sends no reasoning_effort when the client asked for none', async () => {
+    upstream.seen.length = 0;
+    await post(bridge.baseURL, ask(undefined));
+    assert.ok(!('reasoning_effort' in upstream.seen.at(-1)), 'must not invent a level');
+  });
+
+  it('does not leak the nested reasoning object upstream', async () => {
+    upstream.seen.length = 0;
+    await post(bridge.baseURL, ask('high'));
+    assert.ok(!('reasoning' in upstream.seen.at(-1)), 'chat completions has no reasoning object');
+  });
+});

@@ -489,6 +489,22 @@ function conversationIdFor(body) {
   return randomUUID();
 }
 
+/**
+ * The Responses API carries the thinking level as `reasoning.effort`; Chat
+ * Completions carries it as the flat `reasoning_effort` string. Dropping it here
+ * makes every request run at the upstream's own default, so a client that asks
+ * for `max` gets exactly what it would get for `low` — the selector moves, the
+ * model does not think harder.
+ */
+function reasoningEffortFor(body) {
+  const effort = body?.reasoning?.effort;
+  if (typeof effort === 'string' && effort.trim() !== '') return effort.trim();
+  if (typeof body?.reasoning_effort === 'string' && body.reasoning_effort.trim() !== '') {
+    return body.reasoning_effort.trim();
+  }
+  return undefined;
+}
+
 function toChatRequest(body) {
   const rawModel = body.model;
   const model = MODEL_MAP.get(rawModel) || rawModel;
@@ -512,6 +528,10 @@ function toChatRequest(body) {
   if (body.max_output_tokens) chat.max_tokens = body.max_output_tokens;
   if (body.temperature !== undefined) chat.temperature = body.temperature;
   if (body.top_p !== undefined) chat.top_p = body.top_p;
+
+  const effort = reasoningEffortFor(body);
+  if (effort !== undefined) chat.reasoning_effort = effort;
+
   return chat;
 }
 
