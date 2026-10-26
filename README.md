@@ -154,6 +154,19 @@ So for every model the gateway reports as `supports_images: true`, the catalog e
 
 The bridge passes `input_image` through untouched (to `{"type":"image_url","image_url":{"url":"data:..."}}`), so a missing entry is the only thing that can silence images on the Codex side. `GET /v1/models` is the source of truth — `supports_images` there is what the upstream actually accepts.
 
+### Reasoning effort is a separate field on each side of the bridge
+
+The two protocols name the same setting differently, and the name is the only thing they share:
+
+| Side | Where the level lives |
+| --- | --- |
+| Responses (Codex) | `"reasoning": { "effort": "max" }` |
+| Chat Completions (gateway) | `"reasoning_effort": "max"` |
+
+The bridge reads `reasoning.effort` and forwards it as the flat `reasoning_effort`, omitting the field when the client asked for no level so the upstream default still applies. Without that mapping every request reaches the backend at the gateway's default level, so `low` and `max` behave identically — the selector moves, the model does not think harder.
+
+Which levels exist is the gateway's call, not the bridge's. `reasoning_supported_efforts` in `GET /v1/models` is the authority; on this gateway 17 of 55 models offer `max`, and the rest answer with whatever subset they declare (some only `medium`, some `low`/`high`, some `high`/`xhigh`). A level the model does not declare is dropped by the gateway, silently. Pick the model first, then pick the level.
+
 ## Configuration
 
 The defaults assume the usual layout and can be overridden in the profile's `cordis.yml`:

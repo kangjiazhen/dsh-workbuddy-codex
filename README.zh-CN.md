@@ -154,6 +154,19 @@ Codex 在**拼请求之前**会先读 `~/.codex/models.json`。如果所选模�
 
 桥对 `input_image` 是原样透传的（转成 `{"type":"image_url","image_url":{"url":"data:..."}}`），所以 Codex 侧图被吞掉，唯一原因就是目录条目不认图。以 `GET /v1/models` 返回的 `supports_images` 为准。
 
+### 推理档位在两种协议里是两个字段
+
+同一件事，两边名字不同，而且只有名字不同：
+
+| 一侧 | 档位放在哪 |
+| --- | --- |
+| Responses（Codex） | `"reasoning": { "effort": "max" }` |
+| Chat Completions（网关） | `"reasoning_effort": "max"` |
+
+桥读 `reasoning.effort`，转发成扁平的 `reasoning_effort`；客户端没指定档位时不写这个字段，让上游默认值生效。少了这层映射，所有请求都会按网关默认档跑，`low` 和 `max` 行为完全一样 —— 选择器动了，模型没多想一步。
+
+档位有哪些由网关说了算，不由桥决定。`GET /v1/models` 里的 `reasoning_supported_efforts` 才是权威：本网关 55 个模型里 17 个支持 `max`，其余按各自声明的子集走（有的只有 `medium`，有的 `low`/`high`，有的 `high`/`xhigh`）。模型没声明的档位会被网关静默丢弃。先选模型，再选档位。
+
 ## 配置
 
 默认值假设了常规目录结构，可在 profile 的 `cordis.yml` 中覆盖：
