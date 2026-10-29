@@ -2,17 +2,18 @@
 
 [English](README.md) | **简体中文**
 
-一个 DeepSeek Harness 插件，负责把本地 WorkBuddy 反代链路维持在线 —— 模型选择器的 provider、它背后的网关，**以及 OpenAI Codex CLI 需要的那条 Responses 桥**。
+一个 DeepSeek Harness 插件，负责把本地 WorkBuddy 反代链路维持在线 —— 模型选择器的 provider、它背后的网关，**以及 OpenAI Codex CLI 需要的那条 Responses 桥、Claude Code / Claude 桌面端需要的那条 Anthropic Messages 桥**。
 
-在 WorkBuddy 模型能回答之前，有三样东西必须同时对上，而它们都不会把自己装成 Windows 服务：
+在 WorkBuddy 模型能回答之前，有这些环节必须同时对上，而它们都不会把自己装成 Windows 服务：
 
 | 端口 | 服务 | 作用 |
 | --- | --- | --- |
 | `127.0.0.1:7863` | `wb2api` 网关 | OpenAI 兼容的 `/v1/chat/completions` |
 | `127.0.0.1:7864` | Responses 桥（**内置**） | Responses API → chat/completions，供 Codex CLI 使用 |
+| `127.0.0.1:7865` | Anthropic Messages 桥（**内置**） | Anthropic `/v1/messages` → chat/completions，供 Claude Code / Claude 桌面端 3p 使用 |
 | — | `workbuddy` provider | 模型选择器里的那条路由，**从 [`dsh-llm-workbuddy`](https://www.npmjs.com/package/dsh-llm-workbuddy) 挂载而来** |
 
-这两个进程过去都要手动启动，于是重启一次电脑之后，模型选择器会悄无声息地指向一个死掉的端口 —— provider 插件加载正常、模型列表正常，直到第一次请求才失败。本插件接管它们：加载时探测各自的健康端点，缺什么就拉起什么，并按定时器复查，进程崩了会自动回来。
+这些进程过去都要手动启动，于是重启一次电脑之后，模型选择器会悄无声息地指向一个死掉的端口 —— provider 插件加载正常、模型列表正常，直到第一次请求才失败。本插件接管它们：加载时探测各自的健康端点，缺什么就拉起什么，并按定时器复查，进程崩了会自动回来。
 
 它刻意**既不重写网关，也不 fork 适配器**。网关只做进程编排；provider 路由则是用 `ctx.plugin()` 委派给 `dsh-llm-workbuddy` 挂载出来的 —— 那个包自己拥有约 2500 行的 WorkBuddy 适配器、设置面板和每日签到调度器，再抄一份只会让两边一更新就分叉。所以装一次就同时得到 provider + 网关 + 桥。
 
@@ -32,6 +33,11 @@
 | `gateway.acceptStatus` | `[200, 503]` | 网关在无可用账号时仍会跑着并返回 `503`，那是活着，不是挂了。 |
 | `bridge.conversationId` | `auto` | 对着 WorkBuddy 网关不是可选项：缺了它上游会回 `400 / 11-128`，网关随即停用该账号。 |
 | `bridge.maxPromptTokens` | `1200000` | 估算提示词超过它就由桥在本地回 `413`，不把一个注定被上游以 `400 prompt_too_long` 拒绝的请求转发出去。`0` 关闭。见[为什么要在本地设上限](#为什么要在本地设上限)。 |
+| `anthropicBridge.enabled` | `true` | 是否监护 Anthropic Messages 桥。 |
+| `anthropicBridge.baseURL` | `http://127.0.0.1:7865` | 桥监听地址，也就是 Claude 那边要填的 gateway base URL。 |
+| `anthropicBridge.upstream` | *(留空 → 用 `gateway.baseURL`)* | 桥转发的上游。留空即复用同一条网关。 |
+| `anthropicBridge.apiKey` | *(留空 → 读网关注入的 `api_key`)* | 上游 bearer。留空时与 Responses 桥共用同一份密钥，不会有两份会漂移的秘密。 |
+| `anthropicBridge.defaultModel` | *(留空 → 目录第一条)* | 只在客户端直接点名一个裸 Claude 别名（`claude-sonnet-5-5`、`opus`）时才用得上。见[Claude 侧怎么接](#claude-侧怎么接)。 |
 
 如果根本没装 `dsh-llm-workbuddy`，插件照旧监护网关与桥，并打印出补装它的那一条命令（`dsh plugin add dsh-llm-workbuddy`）。任何情况下都不会抛错。
 
@@ -167,6 +173,68 @@ Codex 在**拼请求之前**会先读 `~/.codex/models.json`。如果所选模�
 
 档位有哪些由网关说了算，不由桥决定。`GET /v1/models` 里的 `reasoning_supported_efforts` 才是权威：本网关 55 个模型里 17 个支持 `max`，其余按各自声明的子集走（有的只有 `medium`，有的 `low`/`high`，有的 `high`/`xhigh`）。模型没声明的档位会被网关静默丢弃。先选模型，再选档位。
 
+## Claude 侧怎么接
+
+Claude Code 和 Claude 桌面端（3p 模式）说的是 Anthropic Messages 协议（`POST /v1/messages`，SSE），网关只说 Chat Completions。第二条内置桥把前者翻成后者，监听 `7865`。
+
+### Claude Code
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:7865
+export ANTHROPIC_API_KEY=anything      # 桥不校验；它用网关的 key 向上游认证
+claude
+```
+
+### Claude 桌面端（3p）
+
+改它自己那份生效配置（每个安装的 UUID 不同，`_meta.json` 里的 `appliedId` 指向当前生效的那份）：
+
+```jsonc
+// %LOCALAPPDATA%\Claude-3p\configLibrary\<appliedId>.json
+{
+  "inferenceGatewayBaseUrl": "http://127.0.0.1:7865",
+  "inferenceGatewayApiKey": "anything",
+  "modelDiscoveryEnabled": true,
+  "inferenceProvider": "gateway",
+  "inferenceCredentialKind": "static",
+  "defaultModelEffort": "max"   // 可选，见下节；改成 low/medium/high/xhigh 也行
+}
+```
+
+三个要点：
+
+- **不要写 `inferenceModels`。** 桌面端的 `inferenceModels` 是「手写死」的清单，一旦非空就会绕过 `/v1/models` 发现，下拉框只剩你抄进去的那几条。留空并打开 `modelDiscoveryEnabled`，下拉框才是网关目录的实时投影。
+- **`inferenceGatewayBaseUrl` 允许 `http://` 回环地址**，其他主机名必须是 https。
+- **`defaultModelEffort` 只影响桌面端「推荐」标记**，真正发给上游的档位由桥决定（见下节）。所以两处都不留白，行为才可预期。
+
+### 上下文窗口与思考档位
+
+网关目录里每个模型都有 `context_length`，本网关多数是 `1000000`。桌面端**不会**自己猜这个数：它读 `/v1/models` 每行的 `max_input_tokens`，缺失就套用自己的默认值 `200000`。桥不把这个字段透出去，下拉框里的模型就一律显示 200K，跟网关无关。
+
+桥因此每行都带上：
+
+| 发现行字段 | 来源 | 桌面端拿它做什么 |
+| --- | --- | --- |
+| `max_input_tokens` | 网关 `context_length` / `max_allowed_size` | 显示的上下文窗口；`>= 1000000` 时认作「1M 模型」 |
+| `prefer_1m` | 同上 `>= 1000000` 时置 `true` | 自动选中 1M 变体，而不是让用户手点 |
+| `max_output_tokens` | 网关 `max_output_tokens` | 单轮输出上限 |
+| `max_effort_level` | 网关 `reasoning_supported_efforts` 的最高档 | 思考档位选择器的上限 |
+| `behaves_as` | 桥固定填 `claude-sonnet-5`（仅推理模型） | 套用 Claude 家族的思考 UI，否则**没有档位选择器** |
+
+`behaves_as` 是最容易漏的一条：桌面端只给它认识的 Claude 家族（`claude-<tier>-<version>`）渲染思考档位菜单。合成 id 里没有家族信息，所以桥单独声明一个。同时**下发档位不依赖客户端**：客户端没写 `output_config.effort` 时（桌面端在你动过选择器之前就是不发），桥取该模型支持的最高档。想要「默认最努力」，桥这一层是唯一可靠的地方。
+
+### 为什么模型 id 要改写成 `claude-wb-…`
+
+桌面端对发现回来的每一行都跑一个过滤器（`No()`）：id 里带别家品牌字样的（`kimi`、`gpt`、`deepseek`、`qwen`、`glm`…）直接丢弃，而且它还要 id 长得像 Anthropic 的路由（`claude…`）。真实的 `cn:kimi-k3.1-pro` 两条都过不了 —— 下拉框会空。
+
+所以桥把真实 id 哈希成 `claude-wb-<10 hex>` 再发出去，真实 id 只存在于桥的内存目录里，而**人能读的名字走 `display_name`**（`CN · Kimi-K3.1-Pro`）。桥收到 `claude-wb-…` 再翻回真实 id 转发给网关。
+
+还有一个坑：桌面端会按 `(name, Anthropic 家族)` 合并下拉框行。网关有几组不同的模型共用同一个显示名（`cn:hy3` / `cn:hy3-x`，`cn:hy4-preview` / `cn:hy4-preview-f` 等），直接照抄就会**静默少几条**。桥因此只在名字撞车时给标签补上 id 尾部做区分：`CN · Hy3 (x)`、`Global · Auto (chat)`。本网关实测 52 个模型 → 下拉框 52 条。
+
+### 客户端直接点名裸 Claude 别名时
+
+如果你写的配置里模型名是 `claude-sonnet-5-5` 这种裸别名（它没经过下拉框，所以桥不认识），桥不会 404，而是回落到 `anthropicBridge.defaultModel`，该值留空则用目录第一条。这样一个「从别处抄来的配置」也能出字，而不是让用户对着一条 404 猜。
+
 ## 配置
 
 默认值假设了常规目录结构，可在 profile 的 `cordis.yml` 中覆盖：
@@ -198,6 +266,16 @@ Codex 在**拼请求之前**会先读 `~/.codex/models.json`。如果所选模�
       apiKey: ''             # 留空 = 读 gatewayDir/config.json
       conversationId: auto   # 必填 —— 见上文
       modelAllowlist: []     # 留空 = 放行所有模型
+
+    anthropicBridge:
+      enabled: true
+      autostart: true
+      baseURL: http://127.0.0.1:7865
+      acceptStatus: [200]
+      command: ''            # 留空 = 运行内置桥
+      upstream: ''           # 留空 = 用网关的 baseURL
+      apiKey: ''             # 留空 = 读 gatewayDir/config.json
+      defaultModel: ''       # 留空 = 目录第一条
 ```
 
 路径支持 `~`、`$VAR` / `${VAR}` 以及 Windows 的 `%VAR%`，所以同一份配置可以在机器之间直接拷。
@@ -221,6 +299,7 @@ Codex 在**拼请求之前**会先读 `~/.codex/models.json`。如果所选模�
 ```
 gateway: up (http://127.0.0.1:7863/healthz, pid 14592)
 bridge: up (http://127.0.0.1:7864/healthz)
+anthropicBridge: up (http://127.0.0.1:7865/healthz, pid 14593)
 ```
 
 每行都带实时探测结果、被监管子进程的 pid，以及最近一次拉起失败的错误 —— 这样「模型列表是空的」和「端口死了」不用翻日志也能分清。
