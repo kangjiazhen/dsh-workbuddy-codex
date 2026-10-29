@@ -42,10 +42,10 @@ test('output schema closes the object and requires both fields', () => {
   assert.deepEqual(Object.keys(STATUS_OUTPUT_SCHEMA.properties).sort(), ['ok', 'summary']);
 });
 
-test('renders the summary rather than the raw value', () => {
+test('renders the summary as a content-block array, which is what the channel accepts', () => {
   const def = build();
   const value = { ok: true, summary: 'line one\nline two' };
-  assert.equal(def.output.render({}, value), 'line one\nline two');
+  assert.deepEqual(def.output.render({}, value), [{ type: 'text', text: 'line one\nline two' }]);
 });
 
 test('returns exactly { ok, summary } so the value stays inside the schema', async () => {
