@@ -6,6 +6,7 @@
 #
 #   gateway  wb2api            127.0.0.1:7863  OpenAI-compatible /v1/chat/completions
 #   bridge   codex-chat-bridge 127.0.0.1:7864  Responses API -> chat/completions
+#   anthropicBridge            127.0.0.1:7865  Anthropic Messages -> chat/completions
 #
 # One more thing is set up here: the `workbuddy` route in the model picker. That
 # adapter is not reimplemented — it is mounted from `dsh-llm-workbuddy`, so a
@@ -84,3 +85,22 @@
           # ceiling so an estimate that runs a little high cannot refuse a request
           # that would have fit. 0 disables it.
           maxPromptTokens: 1200000
+
+        # Claude Desktop (3p mode) and Claude Code speak the Anthropic Messages
+        # wire; the gateway speaks Chat Completions. This bridge translates, and
+        # is derived exactly like the Responses bridge above (same upstream, same
+        # bearer). Point Desktop's `inferenceGatewayBaseUrl` at it, and clear
+        # `inferenceModels` so Desktop discovers the whole catalog instead.
+        anthropicBridge:
+          enabled: true
+          autostart: true
+          baseURL: http://127.0.0.1:7865
+          acceptStatus: [200]
+          # Empty = run the bridge shipped in this package.
+          command: ''
+          # Empty = use the gateway's baseURL. Empty apiKey = read the gateway's config.json.
+          upstream: ''
+          apiKey: ''
+          # Used only when a client names a bare Claude alias (claude-sonnet-5-5,
+          # opus). Empty = the first model in the gateway catalog.
+          defaultModel: ''

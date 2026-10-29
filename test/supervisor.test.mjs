@@ -11,8 +11,10 @@ import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 
 import {
+  ANTHROPIC_BRIDGE_ENTRY,
   BRIDGE_ENTRY,
   ManagedProcess,
+  anthropicBridgeLaunchSpec,
   bridgeLaunchSpec,
   expandPath,
   healthURLFor,
@@ -506,6 +508,91 @@ describe('bridgeLaunchSpec', () => {
     c.gatewayDir = mkdtempSync(join(tmpdir(), 'wbs-nokey-'));
     const spec = bridgeLaunchSpec(c, logger);
     assert.equal(spec.env.CCB_API_KEY, undefined);
+    assert.ok(warnings.some((w) => /401/.test(w)));
+  });
+});
+
+describe('anthropicBridgeLaunchSpec', () => {
+  /** A Config-shaped object, defaulted the way the schema would. */
+  function cfg(overrides = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'wba-spec-'));
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({ api_key: 'gw-key' }));
+    return {
+      intervalMs: 15000,
+      probeTimeoutMs: 2000,
+      gatewayDir: dir,
+      gateway: { enabled: true, autostart: true, baseURL: 'http://127.0.0.1:7863', command: 'x', args: [], cwd: '', env: {}, acceptStatus: [200, 503] },
+      anthropicBridge: {
+        enabled: true,
+        autostart: true,
+        baseURL: 'http://127.0.0.1:7865',
+        command: '',
+        args: [],
+        cwd: '',
+        env: {},
+        acceptStatus: [200],
+        upstream: '',
+        apiKey: '',
+        defaultModel: '',
+        ...overrides,
+      },
+    };
+  }
+
+  it('runs the shipped entry through the current Node', () => {
+    const spec = anthropicBridgeLaunchSpec(cfg(), silentLogger);
+    assert.equal(spec.command, process.execPath);
+    assert.equal(spec.args[0], ANTHROPIC_BRIDGE_ENTRY);
+    assert.ok(existsSync(spec.args[0]), 'the packaged entry must actually be on disk');
+  });
+
+  it('points at the supervised gateway and its own port', () => {
+    const spec = anthropicBridgeLaunchSpec(cfg(), silentLogger);
+    assert.equal(spec.env.ANB_UPSTREAM, 'http://127.0.0.1:7863/v1');
+    assert.equal(spec.env.ANB_HOST, '127.0.0.1');
+    assert.deepEqual(spec.args.slice(1), ['--port', '7865', '--upstream', 'http://127.0.0.1:7863/v1']);
+  });
+
+  it('reuses the gateway api key rather than a second copy of the secret', () => {
+    const spec = anthropicBridgeLaunchSpec(cfg(), silentLogger);
+    assert.equal(spec.env.ANB_API_KEY, 'gw-key');
+  });
+
+  it('prefers an explicit anthropicBridge.apiKey', () => {
+    const spec = anthropicBridgeLaunchSpec(cfg({ apiKey: 'explicit' }), silentLogger);
+    assert.equal(spec.env.ANB_API_KEY, 'explicit');
+  });
+
+  it('honours a custom upstream instead of the gateway', () => {
+    const spec = anthropicBridgeLaunchSpec(cfg({ upstream: 'http://127.0.0.1:9999' }), silentLogger);
+    assert.equal(spec.env.ANB_UPSTREAM, 'http://127.0.0.1:9999/v1');
+    assert.ok(spec.args.includes('http://127.0.0.1:9999/v1'));
+  });
+
+  it('passes a default model through when one is configured', () => {
+    const spec = anthropicBridgeLaunchSpec(cfg({ defaultModel: 'cn:hy4-preview' }), silentLogger);
+    assert.equal(spec.env.ANB_DEFAULT_MODEL, 'cn:hy4-preview');
+  });
+
+  it('omits the default model when unset, so the bridge picks the catalog head', () => {
+    const spec = anthropicBridgeLaunchSpec(cfg(), silentLogger);
+    assert.equal(spec.env.ANB_DEFAULT_MODEL, undefined);
+  });
+
+  it('delegates to a custom command and still hands it the port', () => {
+    const spec = anthropicBridgeLaunchSpec(cfg({ command: 'node', args: ['custom.mjs'] }), silentLogger);
+    assert.equal(spec.command, 'node');
+    assert.deepEqual(spec.args, ['custom.mjs']);
+    assert.equal(spec.env.ANB_PORT, '7865');
+  });
+
+  it('warns, but still starts, when no key can be found anywhere', () => {
+    const warnings = [];
+    const logger = { ...silentLogger, warn: (m) => warnings.push(m) };
+    const c = cfg();
+    c.gatewayDir = mkdtempSync(join(tmpdir(), 'wba-nokey-'));
+    const spec = anthropicBridgeLaunchSpec(c, logger);
+    assert.equal(spec.env.ANB_API_KEY, undefined);
     assert.ok(warnings.some((w) => /401/.test(w)));
   });
 });
