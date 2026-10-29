@@ -1,8 +1,10 @@
-# dsh-workbuddy-codex
+# workbuddy2everything
 
 **English** | [简体中文](README.zh-CN.md)
 
-A DeepSeek Harness plugin that keeps the local WorkBuddy reverse-proxy chain alive — the model picker's provider, the gateway behind it, **and the two protocol bridges: Responses for OpenAI Codex CLI, Anthropic Messages for Claude Code and Claude Desktop**.
+> **The repository is now `workbuddy2everything`. The npm package name stays `dsh-workbuddy-codex`.** GitHub redirects the old URL, so existing clones and `github:` dependencies keep working — nothing needs reinstalling.
+
+A DeepSeek Harness plugin that turns a local WorkBuddy gateway into **a model backend for every client** — the model picker's provider, the gateway behind it, **and the two protocol bridges: Responses for OpenAI Codex CLI, Anthropic Messages for Claude Code and Claude Desktop**.
 
 These have to line up before a WorkBuddy model can answer, and none of them installs itself as a Windows service:
 
@@ -60,13 +62,13 @@ It is the same code as [codex-chat-bridge](https://github.com/kangjiazhen/codex-
 ## Install
 
 ```bash
-dsh plugin add git+https://github.com/kangjiazhen/dsh-workbuddy-codex.git
+dsh plugin add git+https://github.com/kangjiazhen/workbuddy2everything.git
 ```
 
 Or from a local checkout:
 
 ```bash
-dsh plugin add file:/path/to/dsh-workbuddy-codex
+dsh plugin add file:/path/to/workbuddy2everything
 ```
 
 The plugin ships a `cordis.patch.yml`, so the profile picks up the `workbuddy-codex` entry automatically once the package is a profile dependency.

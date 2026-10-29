@@ -1,7 +1,7 @@
 {
   "name": "dsh-workbuddy-codex",
   "version": "0.3.3",
-  "description": "DeepSeek Harness plugin that keeps the local WorkBuddy chain answering: registers the workbuddy model provider (mounted from dsh-llm-workbuddy), supervises the wb2api gateway, and runs the bundled Responses API bridge so Codex works too",
+  "description": "DeepSeek Harness plugin that turns a local WorkBuddy gateway into a model backend for every client: registers the workbuddy model provider (mounted from dsh-llm-workbuddy), supervises the wb2api gateway, and runs both bundled protocol bridges — Responses for Codex, Anthropic Messages for Claude Code and Claude Desktop",
   "type": "module",
   "main": "lib/index.js",
   "bin": {
@@ -18,15 +18,20 @@
     "reverse-proxy",
     "codex",
     "responses-api",
+    "claude",
+    "claude-code",
+    "claude-desktop",
+    "anthropic",
+    "messages-api",
     "chat-completions"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kangjiazhen/dsh-workbuddy-codex.git"
+    "url": "git+https://github.com/kangjiazhen/workbuddy2everything.git"
   },
-  "homepage": "https://github.com/kangjiazhen/dsh-workbuddy-codex#readme",
+  "homepage": "https://github.com/kangjiazhen/workbuddy2everything#readme",
   "bugs": {
-    "url": "https://github.com/kangjiazhen/dsh-workbuddy-codex/issues"
+    "url": "https://github.com/kangjiazhen/workbuddy2everything/issues"
   },
   "engines": {
     "node": ">=18"
@@ -47,6 +52,7 @@
     "./supervisor": "./lib/supervisor.js",
     "./provider": "./lib/provider.js",
     "./bridge/codex-chat-bridge.mjs": "./bridge/codex-chat-bridge.mjs",
+    "./bridge/anthropic-chat-bridge.mjs": "./bridge/anthropic-chat-bridge.mjs",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json",
     "./status-tool": "./lib/status-tool.js"

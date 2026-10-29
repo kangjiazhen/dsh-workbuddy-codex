@@ -1,8 +1,10 @@
-# dsh-workbuddy-codex
+# workbuddy2everything
 
 [English](README.md) | **简体中文**
 
-一个 DeepSeek Harness 插件，负责把本地 WorkBuddy 反代链路维持在线 —— 模型选择器的 provider、它背后的网关，**以及 OpenAI Codex CLI 需要的那条 Responses 桥、Claude Code / Claude 桌面端需要的那条 Anthropic Messages 桥**。
+> **仓库已改名为 `workbuddy2everything`，npm 包名仍是 `dsh-workbuddy-codex`。** 旧地址有 301 跳转，已经 clone 的仓库和 `github:` 依赖都照常工作，不需要重装。
+
+一个 DeepSeek Harness 插件，把本地 WorkBuddy 网关变成**任何客户端都能用的模型后端** —— 模型选择器的 provider、它背后的网关，**以及两条内置协议桥：给 OpenAI Codex CLI 的 Responses，给 Claude Code / Claude 桌面端的 Anthropic Messages**。
 
 在 WorkBuddy 模型能回答之前，有这些环节必须同时对上，而它们都不会把自己装成 Windows 服务：
 
@@ -60,13 +62,13 @@ Codex CLI --(Responses)--> 桥 :7864 --(ChatCompletions)--> 网关 :7863 --> Wor
 ## 安装
 
 ```bash
-dsh plugin add git+https://github.com/kangjiazhen/dsh-workbuddy-codex.git
+dsh plugin add git+https://github.com/kangjiazhen/workbuddy2everything.git
 ```
 
 或者从本地检出安装：
 
 ```bash
-dsh plugin add file:/path/to/dsh-workbuddy-codex
+dsh plugin add file:/path/to/workbuddy2everything
 ```
 
 插件自带 `cordis.patch.yml`，所以只要它成为 profile 依赖，profile 就会自动拿到 `workbuddy-codex` 这一条。
